@@ -183,16 +183,30 @@ public class ApiModuleTests
     public void OcrParserReadsTurkishCurrencyAndLeavesUnknownValuesNull()
     {
         var result = ZReportOcrParser.Parse(
-            "Brüt\nSatış: ₺21.321,50 TL\nToplam KDV: 1.234,50\nNet satış: 20.087,00\nNakit: 12.000,00 TL\nKart: 9.321,50"
+            "TOPLAM CİRO:\n₺47.508,25 TL\nKDV TUTARI: 7.600,00 TL\nNet satış: 39.908,25\nNakit: 28.000,00 TL\nKart: 19.508,25"
         );
 
-        Assert.Equal(21321.50m, result.GrossSales);
-        Assert.Equal(1234.50m, result.TotalVat);
-        Assert.Equal(20087.00m, result.NetSales);
-        Assert.Equal(12000.00m, result.CashAmount);
-        Assert.Equal(9321.50m, result.CardAmount);
-        Assert.Equal(21321.50m, result.TotalAmount);
+        Assert.Equal(47508.25m, result.GrossSales);
+        Assert.Equal(7600.00m, result.TotalVat);
+        Assert.Equal(39908.25m, result.NetSales);
+        Assert.Equal(28000.00m, result.CashAmount);
+        Assert.Equal(19508.25m, result.CardAmount);
+        Assert.Equal(47508.25m, result.TotalAmount);
         Assert.Null(ZReportOcrParser.Parse("Bu metinde tutar etiketi bulunmuyor.").GrossSales);
+    }
+
+    [Fact]
+    public void OcrParserReadsGrossSalesAndVatFromLiveTurkishOcrText()
+    {
+        var result = ZReportOcrParser.Parse("Toplam Ciro 1.250,50\nKDV Tutarı 200,08");
+        var uppercaseWithLineBreaks = ZReportOcrParser.Parse(
+            "TOPLAM CİRO-\n800,00\nKDV TUTARI\n-\n80,00"
+        );
+
+        Assert.Equal(1250.50m, result.GrossSales);
+        Assert.Equal(200.08m, result.TotalVat);
+        Assert.Equal(800.00m, uppercaseWithLineBreaks.GrossSales);
+        Assert.Equal(80.00m, uppercaseWithLineBreaks.TotalVat);
     }
 
     [Fact]

@@ -183,9 +183,27 @@ public static class ZReportOcrParser
     public static OcrResult Parse(string rawText)
     {
         // Satır sonları etiket ile tutar arasında gelebilir; ham OCR metni yanıtta korunur.
-        var normalizedText = Regex.Replace(rawText, @"(?<=\p{L})[ \t]*\r?\n[ \t]*(?=\p{L})", " ");
-        var gross = ParseAmount(normalizedText, "Brüt satış", "Brut satis", "Gross Sales", "GrossSales");
-        var vat = ParseAmount(normalizedText, "Toplam KDV", "KDV", "Total VAT", "TotalVat");
+        var normalizedText = NormalizeForMatching(
+            Regex.Replace(rawText, @"(?<=\p{L})[ \t]*\r?\n[ \t]*(?=\p{L})", " ")
+        );
+        var gross = ParseAmount(
+            normalizedText,
+            "Toplam Ciro",
+            "Toplam Cirosu",
+            "Brüt satış",
+            "Brut satis",
+            "Gross Sales",
+            "GrossSales"
+        );
+        var vat = ParseAmount(
+            normalizedText,
+            "KDV Tutarı",
+            "KDV Tutari",
+            "Toplam KDV",
+            "Total VAT",
+            "TotalVat",
+            "KDV"
+        );
         var net = ParseAmount(normalizedText, "Net satış", "Net satis", "Net Sales", "NetSales");
         var cash = ParseAmount(normalizedText, "Nakit", "Cash", "CashAmount");
         var card = ParseAmount(normalizedText, "Kart", "Kredi kartı", "Card", "CardAmount");
@@ -200,9 +218,14 @@ public static class ZReportOcrParser
     {
         foreach (var label in labels)
         {
+            var flexibleLabel = Regex.Replace(
+                Regex.Escape(NormalizeForMatching(label)),
+                @"\\ ",
+                @"\s+"
+            );
             var match = Regex.Match(
                 text,
-                $@"{Regex.Escape(label)}\s*[:\-]?\s*(?:₺|TL)?\s*([\d.,]+)",
+                $@"{flexibleLabel}\s*[:\-]?\s*(?:₺\s*|TL\s*)?([\d.,]+)",
                 RegexOptions.IgnoreCase | RegexOptions.CultureInvariant
             );
             if (!match.Success) continue;
@@ -217,6 +240,9 @@ public static class ZReportOcrParser
         }
         return null;
     }
+
+    private static string NormalizeForMatching(string value) =>
+        value.Replace('İ', 'i').Replace('ı', 'i').Replace('I', 'i').ToLowerInvariant();
 }
 
 public static class FinancialTotals
