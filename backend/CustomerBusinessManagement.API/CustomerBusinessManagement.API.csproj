@@ -11,6 +11,9 @@
     <PackageReference Include="Swashbuckle.AspNetCore" Version="6.6.2" />
   </ItemGroup>
   <ItemGroup>
+    <None Include="web.config" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+  <ItemGroup>
     <ProjectReference Include="..\CustomerBusinessManagement.Business\CustomerBusinessManagement.Business.csproj" />
     <ProjectReference Include="..\CustomerBusinessManagement.DataAccess\CustomerBusinessManagement.DataAccess.csproj" />
     <ProjectReference Include="..\CustomerBusinessManagement.DTO\CustomerBusinessManagement.DTO.csproj" />
