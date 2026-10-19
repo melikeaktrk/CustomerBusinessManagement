@@ -131,7 +131,11 @@ builder.Services.AddCors(o =>
 var app = builder.Build();
 app.UseExceptionHandler();
 app.UseSwagger();
-app.UseSwaggerUI();
+app.UseSwaggerUI(c =>
+{
+    c.SwaggerEndpoint("/swagger/v1/swagger.json", "Customer Business Management API V1");
+    c.RoutePrefix = string.Empty;
+});
 if (app.Environment.IsDevelopment())
 {
     using var scope = app.Services.CreateScope();
