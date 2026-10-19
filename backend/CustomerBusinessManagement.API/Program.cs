@@ -6,10 +6,13 @@ using CustomerBusinessManagement.DataAccess;
 using CustomerBusinessManagement.DTO;
 using CustomerBusinessManagement.Entities;
 using FluentValidation;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Identity;
+using Microsoft.AspNetCore.DataProtection.Repositories;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
+using System.Xml.Linq;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -18,6 +21,9 @@ builder.Services.AddControllers(o => o.Filters.AddService<FluentValidationAction
 builder.Services.AddProblemDetails();
 builder.Services.AddExceptionHandler<ApiExceptionHandler>();
 builder.Services.AddScoped<FluentValidationActionFilter>();
+builder.Services.AddDataProtection().AddKeyManagementOptions(options =>
+    options.XmlRepository = new InMemoryXmlRepository()
+);
 builder.Services.AddScoped<IValidator<LoginRequest>, LoginRequestValidator>();
 builder.Services.AddScoped<IValidator<CustomerRequest>, CustomerRequestValidator>();
 builder.Services.AddScoped<IValidator<EmployeeRequest>, EmployeeRequestValidator>();
@@ -225,3 +231,25 @@ app.MapControllers();
 app.Run();
 
 public partial class Program { }
+
+sealed class InMemoryXmlRepository : IXmlRepository
+{
+    private readonly object sync = new();
+    private readonly List<XElement> elements = new();
+
+    public IReadOnlyCollection<XElement> GetAllElements()
+    {
+        lock (sync)
+        {
+            return elements.Select(element => new XElement(element)).ToArray();
+        }
+    }
+
+    public void StoreElement(XElement element, string friendlyName)
+    {
+        lock (sync)
+        {
+            elements.Add(new XElement(element));
+        }
+    }
+}
