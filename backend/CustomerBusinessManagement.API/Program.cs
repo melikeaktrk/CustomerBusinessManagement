@@ -228,6 +228,25 @@ app.UseCors();
 app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();
+
+if (app.Environment.IsProduction())
+{
+    try
+    {
+        using var scope = app.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        db.Database.Migrate();
+        app.Logger.LogInformation("Pending Entity Framework Core migrations were applied successfully.");
+    }
+    catch (Exception ex)
+    {
+        app.Logger.LogError(
+            ex,
+            "An error occurred while applying Entity Framework Core migrations. The application will continue running."
+        );
+    }
+}
+
 app.Run();
 
 public partial class Program { }
