@@ -13,6 +13,7 @@ using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
 
 var builder = WebApplication.CreateBuilder(args);
+builder.WebHost.UseKestrel();
 
 // İstek gövdelerindeki DTO'ları, merkezi doğrulama filtresiyle denetle.
 builder.Services.AddControllers(o => o.Filters.AddService<FluentValidationActionFilter>());
