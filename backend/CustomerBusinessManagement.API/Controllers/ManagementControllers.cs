@@ -29,12 +29,15 @@ public class AuthController(UserManager<ApplicationUser> users, IConfiguration c
         var expiry = DateTime.UtcNow.AddHours(8);
         var key =
             config["Jwt:Key"] ?? throw new InvalidOperationException("Jwt:Key is not configured.");
+        var roles = await users.GetRolesAsync(user);
         var claims = new[]
         {
             new Claim(JwtRegisteredClaimNames.Sub, user.Id),
             new Claim(JwtRegisteredClaimNames.Email, user.Email!),
             new Claim(JwtRegisteredClaimNames.UniqueName, user.UserName!),
-        };
+        }
+        .Concat(roles.Select(r => new Claim("role", r)))
+        .ToArray();
         var token = new JwtSecurityToken(
             config["Jwt:Issuer"] ?? "CustomerBusinessManagement",
             config["Jwt:Audience"] ?? "CustomerBusinessManagement",
@@ -61,22 +64,25 @@ public class AuthController(UserManager<ApplicationUser> users, IConfiguration c
     public async Task<IActionResult> Me()
     {
         var u = await users.GetUserAsync(User);
-        return u == null
-            ? Unauthorized()
-            : Ok(
-                new
-                {
-                    u.Id,
-                    u.Email,
-                    u.UserName,
-                    u.FirstName,
-                    u.LastName,
-                }
-            );
+        if (u == null)
+            return Unauthorized();
+
+        var roles = await users.GetRolesAsync(u);
+        return Ok(
+            new
+            {
+                u.Id,
+                u.Email,
+                u.UserName,
+                u.FirstName,
+                u.LastName,
+                Roles = roles,
+            }
+        );
     }
 }
 
-[Authorize]
+[Authorize(Policy = AuthorizationPolicies.Admin)]
 [ApiController]
 [Route("api/[controller]")]
 public class CustomersController(ApplicationDbContext db, IAuditLogService audit) : ControllerBase
@@ -114,6 +120,9 @@ public class CustomersController(ApplicationDbContext db, IAuditLogService audit
             Email = r.Email,
             Address = r.Address,
             TaxNumber = r.TaxNumber,
+            CustomerRegistrationDate = r.CustomerRegistrationDate == default
+                ? DateOnly.FromDateTime(DateTime.UtcNow)
+                : r.CustomerRegistrationDate,
             IsActive = r.IsActive,
         };
         db.Add(x);
@@ -141,6 +150,8 @@ public class CustomersController(ApplicationDbContext db, IAuditLogService audit
         x.Email = r.Email;
         x.Address = r.Address;
         x.TaxNumber = r.TaxNumber;
+        if (r.CustomerRegistrationDate != default)
+            x.CustomerRegistrationDate = r.CustomerRegistrationDate;
         x.IsActive = r.IsActive;
         await db.SaveChangesAsync();
         await audit.RecordAsync("Update", nameof(Customer), id.ToString(), $"Müşteri güncellendi: {x.FirstName} {x.LastName}");
@@ -160,7 +171,7 @@ public class CustomersController(ApplicationDbContext db, IAuditLogService audit
     }
 }
 
-[Authorize]
+[Authorize(Policy = AuthorizationPolicies.Admin)]
 [ApiController]
 [Route("api/[controller]")]
 public class EmployeesController(ApplicationDbContext db, IAuditLogService audit) : ControllerBase
@@ -186,6 +197,9 @@ public class EmployeesController(ApplicationDbContext db, IAuditLogService audit
             Email = r.Email,
             Position = r.Position,
             HireDate = r.HireDate,
+            EmployeeRegistrationDate = r.EmployeeRegistrationDate == default
+                ? DateOnly.FromDateTime(DateTime.UtcNow)
+                : r.EmployeeRegistrationDate,
             Salary = r.Salary,
             IsActive = r.IsActive,
         };
@@ -212,6 +226,8 @@ public class EmployeesController(ApplicationDbContext db, IAuditLogService audit
         x.Email = r.Email;
         x.Position = r.Position;
         x.HireDate = r.HireDate;
+        if (r.EmployeeRegistrationDate != default)
+            x.EmployeeRegistrationDate = r.EmployeeRegistrationDate;
         x.Salary = r.Salary;
         x.IsActive = r.IsActive;
         await db.SaveChangesAsync();
@@ -232,7 +248,7 @@ public class EmployeesController(ApplicationDbContext db, IAuditLogService audit
     }
 }
 
-[Authorize]
+[Authorize(Policy = AuthorizationPolicies.Admin)]
 [ApiController]
 [Route("api/[controller]")]
 public class AccountingTransactionsController(

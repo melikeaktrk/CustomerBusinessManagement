@@ -14,7 +14,7 @@ using Microsoft.IdentityModel.Tokens;
 
 namespace CustomerBusinessManagement.API.Controllers;
 
-[Authorize]
+[Authorize(Policy = AuthorizationPolicies.Admin)]
 [ApiController]
 [Route("api/[controller]")]
 public class CashTransactionsController(
@@ -104,7 +104,7 @@ public class CashTransactionsController(
     }
 }
 
-[Authorize]
+[Authorize(Policy = AuthorizationPolicies.Admin)]
 [ApiController]
 [Route("api/[controller]")]
 public class ZReportsController(
@@ -176,6 +176,17 @@ public class ZReportsController(
         x.CashAmount = r.CashAmount;
         x.CardAmount = r.CardAmount;
         x.TotalAmount = r.TotalAmount;
+            x.OksFisleriCount = r.OksFisleriCount;
+            x.KdvToplami = r.KdvToplami;
+            x.SatisToplami = r.SatisToplami;
+            x.Nakit = r.Nakit;
+            x.Kredi = r.Kredi;
+            x.Diger = r.Diger;
+            x.IptalCount = r.IptalCount;
+            x.IptalKdvToplami = r.IptalKdvToplami;
+            x.IptalSatisToplami = r.IptalSatisToplami;
+            x.Nakit = r.Nakit;
+            x.Kredi = r.Kredi;
         x.DocumentPath = r.DocumentPath;
         x.OcrRawText = r.OcrRawText;
         x.IsConfirmed = true;
@@ -268,13 +279,22 @@ public class ZReportsController(
             CashAmount = r.CashAmount,
             CardAmount = r.CardAmount,
             TotalAmount = r.TotalAmount,
+                OksFisleriCount = r.OksFisleriCount,
+                KdvToplami = r.KdvToplami,
+                SatisToplami = r.SatisToplami,
+                Nakit = r.Nakit,
+                Kredi = r.Kredi,
+                Diger = r.Diger,
+                IptalCount = r.IptalCount,
+                IptalKdvToplami = r.IptalKdvToplami,
+                IptalSatisToplami = r.IptalSatisToplami,
             DocumentPath = r.DocumentPath,
             OcrRawText = r.OcrRawText,
             IsConfirmed = r.IsConfirmed,
         };
 }
 
-[Authorize]
+[Authorize(Policy = AuthorizationPolicies.Admin)]
 [ApiController]
 [Route("api/[controller]")]
 public class DashboardController(ApplicationDbContext db, ManagementService svc) : ControllerBase

@@ -25,16 +25,15 @@ public class ApiModuleTests
         var controller = new CustomersController(db, new NoOpAuditLog());
         var created = Assert.IsType<CreatedAtActionResult>(
             await controller.Create(
-                new CustomerRequest(
-                    "C-001",
-                    "Ada",
-                    "Yilmaz",
-                    null,
-                    "555",
-                    "ada@example.com",
-                    "Istanbul",
-                    null
-                )
+                new CustomerRequest
+                {
+                    CustomerCode = "C-001",
+                    FirstName = "Ada",
+                    LastName = "Yilmaz",
+                    Phone = "555",
+                    Email = "ada@example.com",
+                    Address = "Istanbul",
+                }
             )
         );
         var customer = Assert.IsType<Customer>(created.Value);
@@ -42,16 +41,15 @@ public class ApiModuleTests
         Assert.IsType<NoContentResult>(
             await controller.Update(
                 customer.Id,
-                new CustomerRequest(
-                    "C-001",
-                    "Ada",
-                    "Kaya",
-                    null,
-                    "555",
-                    "ada@example.com",
-                    "Istanbul",
-                    null
-                )
+                new CustomerRequest
+                {
+                    CustomerCode = "C-001",
+                    FirstName = "Ada",
+                    LastName = "Kaya",
+                    Phone = "555",
+                    Email = "ada@example.com",
+                    Address = "Istanbul",
+                }
             )
         );
         Assert.IsType<NoContentResult>(await controller.Delete(customer.Id));
@@ -67,15 +65,16 @@ public class ApiModuleTests
         var controller = new EmployeesController(db, new NoOpAuditLog());
         var created = Assert.IsType<CreatedAtActionResult>(
             await controller.Create(
-                new EmployeeRequest(
-                    "Ali",
-                    "Demir",
-                    "555",
-                    "ali@example.com",
-                    "Clerk",
-                    new DateOnly(2024, 1, 1),
-                    25000m
-                )
+                new EmployeeRequest
+                {
+                    FirstName = "Ali",
+                    LastName = "Demir",
+                    Phone = "555",
+                    Email = "ali@example.com",
+                    Position = "Clerk",
+                    HireDate = new DateOnly(2024, 1, 1),
+                    Salary = 25000m,
+                }
             )
         );
         var employee = Assert.IsType<Employee>(created.Value);
@@ -83,15 +82,16 @@ public class ApiModuleTests
         Assert.IsType<NoContentResult>(
             await controller.Update(
                 employee.Id,
-                new EmployeeRequest(
-                    "Ali",
-                    "Demir",
-                    "555",
-                    "ali@example.com",
-                    "Manager",
-                    new DateOnly(2024, 1, 1),
-                    30000m
-                )
+                new EmployeeRequest
+                {
+                    FirstName = "Ali",
+                    LastName = "Demir",
+                    Phone = "555",
+                    Email = "ali@example.com",
+                    Position = "Manager",
+                    HireDate = new DateOnly(2024, 1, 1),
+                    Salary = 30000m,
+                }
             )
         );
         Assert.IsType<NoContentResult>(await controller.Delete(employee.Id));
@@ -144,20 +144,20 @@ public class ApiModuleTests
     {
         await using var db = CreateDb();
         var controller = new ZReportsController(db, CreateOcrService(), new NoOpAuditLog());
-        var unconfirmed = new ZReportRequest(
-            DateTime.UtcNow,
-            100m,
-            10m,
-            90m,
-            60m,
-            40m,
-            100m,
-            null,
-            "manual",
-            false
-        );
+        var unconfirmed = new ZReportRequest
+        {
+            ReportDate = DateTime.UtcNow,
+            GrossSales = 100m,
+            TotalVat = 10m,
+            NetSales = 90m,
+            CashAmount = 60m,
+            CardAmount = 40m,
+            TotalAmount = 100m,
+            OcrRawText = "manual",
+        };
         Assert.IsType<BadRequestObjectResult>(await controller.Create(unconfirmed));
-        var confirmed = await controller.Create(unconfirmed with { IsConfirmed = true });
+        unconfirmed.IsConfirmed = true;
+        var confirmed = await controller.Create(unconfirmed);
         Assert.IsType<CreatedAtActionResult>(confirmed);
         Assert.Single(await db.ZReports.ToListAsync());
     }
@@ -207,6 +207,91 @@ public class ApiModuleTests
         Assert.Equal(200.08m, result.TotalVat);
         Assert.Equal(800.00m, uppercaseWithLineBreaks.GrossSales);
         Assert.Equal(80.00m, uppercaseWithLineBreaks.TotalVat);
+    }
+
+    [Fact]
+    public void OcrParserExtractsReceiptDocumentTypeTotals()
+    {
+        var result = ZReportOcrParser.Parse(
+            "BELGE TEPLERT OKC FİŞLERİ 99 -KOV TOPLAMI *1 067,82 -SATIŞ TOPLAMI *11.745,00 -NAKİT *2 355,00 -KREDİ *9 390,00 -DİĞER *0,00 İPTAL 3 -KOV TOPLAMI *8,64 -SATIŞ TOPLAMI *95,00 SAYACLAR"
+        );
+
+        Assert.Equal(99, result.OksFisleriCount);
+        Assert.Equal(1067.82m, result.KdvToplami);
+        Assert.Equal(11745.00m, result.SatisToplami);
+        Assert.Equal(2355.00m, result.Nakit);
+        Assert.Equal(9390.00m, result.Kredi);
+        Assert.Equal(0m, result.Diger);
+        Assert.Equal(3, result.IptalCount);
+        Assert.Equal(8.64m, result.IptalKdvToplami);
+        Assert.Equal(95.00m, result.IptalSatisToplami);
+    }
+
+    [Fact]
+    public async Task LeaveRequiresCompletedWorkYearAndCountsWeekdaysAcrossMonths()
+    {
+        await using var db = CreateDb();
+        var employee = new Employee
+        {
+            FirstName = "Ayşe",
+            LastName = "Test",
+            Phone = "555",
+            Email = "ayse@example.com",
+            Position = "Personel",
+            HireDate = new DateOnly(2025, 6, 15),
+            EmployeeRegistrationDate = new DateOnly(2025, 6, 15),
+        };
+        db.Employees.Add(employee);
+        await db.SaveChangesAsync();
+        var service = new LeaveService(db);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => service.CreateAsync(
+            new LeaveRequest(employee.Id, new DateOnly(2026, 6, 12), new DateOnly(2026, 6, 12), "Yıllık İzin", "Bir gün")
+        ));
+        var leave = await service.CreateAsync(
+            new LeaveRequest(employee.Id, new DateOnly(2026, 6, 15), new DateOnly(2026, 6, 19), "Yıllık İzin", "Bir hafta")
+        );
+        var status = await service.GetStatusAsync(employee.Id, new DateTime(2026, 6, 20));
+
+        Assert.Equal(5, leave.NumberOfDays);
+        Assert.Equal(14, status.AnnualEntitlementDays);
+        Assert.Equal(5, status.UsedDays);
+        Assert.Equal(9, status.RemainingDays);
+        Assert.Contains(status.MonthlyUsage, month => month.Year == 2026 && month.Month == 6 && month.Days == 5);
+    }
+
+    [Fact]
+    public async Task LeaveBalanceRecalculatesOldRecordsFromTheirDateRanges()
+    {
+        await using var db = CreateDb();
+        var employee = new Employee
+        {
+            FirstName = "Deniz",
+            LastName = "Test",
+            Phone = "555",
+            Email = "deniz@example.com",
+            Position = "Personel",
+            HireDate = new DateOnly(2020, 1, 1),
+            EmployeeRegistrationDate = new DateOnly(2020, 1, 1),
+        };
+        db.Employees.Add(employee);
+        db.EmployeeLeaveRecords.Add(new EmployeeLeaveRecord
+        {
+            Employee = employee,
+            LeaveStartDate = new DateOnly(2026, 6, 15),
+            LeaveEndDate = new DateOnly(2026, 6, 19),
+            NumberOfDays = 1,
+            LeaveYear = 2026,
+            Description = "Eski izin",
+        });
+        await db.SaveChangesAsync();
+
+        var status = await new LeaveService(db).GetStatusAsync(employee.Id, new DateTime(2026, 6, 20));
+
+        Assert.Equal(20, status.AnnualEntitlementDays);
+        Assert.Equal(5, status.UsedDays);
+        Assert.Equal(15, status.RemainingDays);
+        Assert.Equal(5, Assert.Single(status.MonthlyUsage).Days);
     }
 
     [Fact]

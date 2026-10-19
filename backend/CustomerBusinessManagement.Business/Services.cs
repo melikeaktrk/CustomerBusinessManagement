@@ -25,7 +25,7 @@ public sealed class ZReportOcrService(IConfiguration configuration) : IZReportOc
     public async Task<OcrResult> ReadAsync(IFormFile file, CancellationToken ct)
     {
         // Boş değer bırakıldığında Windows PATH kullanılır; ortam değişkenleri JSON ayarlarını ezer.
-        var tesseract = ResolveExecutable(configuration["Ocr:TesseractPath"], "tesseract");
+        var tesseract = ResolveExecutable(configuration["Ocr:TesseractPath"], "tesseract.exe");
         var languages = string.IsNullOrWhiteSpace(configuration["Ocr:Languages"])
             ? "tur+eng"
             : configuration["Ocr:Languages"]!;
@@ -171,7 +171,7 @@ public sealed class ZReportOcrService(IConfiguration configuration) : IZReportOc
             arguments.Add("--tessdata-dir");
             arguments.Add(tessdataPath.Trim());
         }
-        arguments.AddRange(["-l", languages, "--psm", "6"]);
+        arguments.AddRange(["-l", languages, "--psm", "4"]);
         return arguments;
     }
 
@@ -183,9 +183,7 @@ public static class ZReportOcrParser
     public static OcrResult Parse(string rawText)
     {
         // Satır sonları etiket ile tutar arasında gelebilir; ham OCR metni yanıtta korunur.
-        var normalizedText = NormalizeForMatching(
-            Regex.Replace(rawText, @"(?<=\p{L})[ \t]*\r?\n[ \t]*(?=\p{L})", " ")
-        );
+        var normalizedText = NormalizeForMatching(rawText);
         var gross = ParseAmount(
             normalizedText,
             "Toplam Ciro",
@@ -205,13 +203,97 @@ public static class ZReportOcrParser
             "KDV"
         );
         var net = ParseAmount(normalizedText, "Net satış", "Net satis", "Net Sales", "NetSales");
-        var cash = ParseAmount(normalizedText, "Nakit", "Cash", "CashAmount");
-        var card = ParseAmount(normalizedText, "Kart", "Kredi kartı", "Card", "CardAmount");
-        var total = ParseAmount(normalizedText, "Genel toplam", "Toplam tutar", "Total", "TotalAmount");
+        var payments = ExtractSection(normalizedText, "odeme bilgileri", "belge t");
+        var cash = ParsePaymentTotal(payments, "nakit");
+        var credit = ParsePaymentTotal(payments, "kredi");
+        var qrCard = ParsePaymentTotal(payments, "karekod kart");
+        var card = credit.HasValue && qrCard.HasValue ? credit + qrCard : credit ?? qrCard;
+        var total = cash.HasValue && card.HasValue ? cash + card : null;
+        var documentTypes = ExtractSection(normalizedText, "belge t", "sayaclar");
+        var voidSection = ExtractSection(documentTypes, "iptal", null);
+        var receiptCount = ParseIntegerOnLine(documentTypes, "okc fisleri");
+        var documentVat = ParseAmountOnLine(documentTypes, "kdv toplami", "kov toplami");
+        var documentSales = ParseAmountOnLine(documentTypes, "satis top");
+        var documentCash = ParseAmountOnLine(documentTypes, "nakit");
+        var documentCard = ParseAmountOnLine(documentTypes, "kredi");
+        var other = ParseAmountOnLine(documentTypes, "diger");
+        var cancelledCount = ParseIntegerOnLine(voidSection, "iptal");
+        var cancelledVat = ParseAmountOnLine(voidSection, "kdv toplami", "kov toplami");
+        var cancelledSales = ParseAmountOnLine(voidSection, "satis top");
+        gross ??= documentSales;
+        vat ??= documentVat;
+        cash ??= ParseAmount(normalizedText, "Nakit", "Cash", "CashAmount");
+        card ??= ParseAmount(normalizedText, "Kart", "Kredi kartı", "Card", "CardAmount");
         net ??= gross.HasValue && vat.HasValue ? gross - vat : null;
-        total ??= cash.HasValue && card.HasValue ? cash + card : null;
+        total ??= documentSales ?? (cash.HasValue && card.HasValue ? cash + card : null);
+        return new OcrResult(
+            rawText.Trim(), gross, vat, net, cash, card, total,
+            null, receiptCount, documentVat, documentSales, other,
+            cancelledCount, cancelledVat, cancelledSales, documentCash, documentCard
+        );
+    }
 
-        return new OcrResult(rawText.Trim(), gross, vat, net, cash, card, total);
+    private static string ExtractSection(string text, string startLabel, string? endLabel)
+    {
+        var start = text.IndexOf(startLabel, StringComparison.OrdinalIgnoreCase);
+        if (start < 0) return string.Empty;
+        var section = text[(start + startLabel.Length)..];
+        var end = endLabel is null ? -1 : section.IndexOf(endLabel, StringComparison.OrdinalIgnoreCase);
+        var sectionStart = start + startLabel.Length;
+        return end < 0 ? text[start..] : text[start..(sectionStart + end)];
+    }
+
+    private static int? ParseInteger(string text, params string[] labels)
+    {
+        var amount = ParseAmount(text, labels);
+        return amount.HasValue ? decimal.ToInt32(decimal.Truncate(amount.Value)) : null;
+    }
+
+    private static decimal? ParsePaymentTotal(string text, string itemLabel)
+    {
+        var lines = text.Split(["\r\n", "\n"], StringSplitOptions.RemoveEmptyEntries);
+        for (var index = 0; index < lines.Length; index++)
+        {
+            if (!NormalizeForMatching(lines[index]).Contains(itemLabel, StringComparison.Ordinal))
+                continue;
+            for (var totalIndex = index + 1; totalIndex < Math.Min(lines.Length, index + 3); totalIndex++)
+            {
+                if (!NormalizeForMatching(lines[totalIndex]).Contains("toplam", StringComparison.Ordinal)
+                    && !NormalizeForMatching(lines[totalIndex]).Contains("toplan", StringComparison.Ordinal))
+                    continue;
+                return ParseAmountOnLine(lines[totalIndex], "toplam", "toplan");
+            }
+        }
+        return null;
+    }
+
+    private static int? ParseIntegerOnLine(string text, params string[] labels)
+    {
+        var amount = ParseAmountOnLine(text, labels);
+        return amount.HasValue ? decimal.ToInt32(decimal.Truncate(amount.Value)) : null;
+    }
+
+    private static decimal? ParseAmountOnLine(string text, params string[] labels)
+    {
+        foreach (var line in text.Split(["\r\n", "\n"], StringSplitOptions.RemoveEmptyEntries))
+        {
+            var normalizedLine = NormalizeForMatching(line);
+            foreach (var label in labels)
+            {
+                var index = normalizedLine.IndexOf(label, StringComparison.Ordinal);
+                if (index < 0) continue;
+                var valueMatch = Regex.Match(normalizedLine[(index + label.Length)..], @"\*?[^0-9b\r\n]*([0-9b][0-9., ]*)");
+                if (!valueMatch.Success) continue;
+                var value = valueMatch.Groups[1].Value.Trim().Replace('b', '8').Replace(" ", "");
+                var decimalSeparator = value.LastIndexOfAny([',', '.']);
+                var normalized = decimalSeparator >= 0 && value.Length - decimalSeparator - 1 is 1 or 2
+                    ? Regex.Replace(value[..decimalSeparator], "[.,]", "") + "." + value[(decimalSeparator + 1)..]
+                    : Regex.Replace(value, "[.,]", "");
+                if (decimal.TryParse(normalized, NumberStyles.Number, CultureInfo.InvariantCulture, out var amount))
+                    return amount;
+            }
+        }
+        return null;
     }
 
     private static decimal? ParseAmount(string text, params string[] labels)
@@ -225,12 +307,12 @@ public static class ZReportOcrParser
             );
             var match = Regex.Match(
                 text,
-                $@"{flexibleLabel}\s*[:\-]?\s*(?:₺\s*|TL\s*)?([\d.,]+)",
+                $@"{flexibleLabel}\s*[:\-]?\s*\*?\s*(?:₺\s*|TL\s*)?([\d][\d.,\s]*[\d]|[\d])",
                 RegexOptions.IgnoreCase | RegexOptions.CultureInvariant
             );
             if (!match.Success) continue;
 
-            var value = match.Groups[1].Value.Trim();
+            var value = Regex.Replace(match.Groups[1].Value.Trim(), @"\s+", "");
             var decimalSeparator = value.LastIndexOfAny([',', '.']);
             var normalized = decimalSeparator >= 0 && value.Length - decimalSeparator - 1 is 1 or 2
                 ? Regex.Replace(value[..decimalSeparator], "[.,]", "") + "." + value[(decimalSeparator + 1)..]
@@ -241,8 +323,18 @@ public static class ZReportOcrParser
         return null;
     }
 
-    private static string NormalizeForMatching(string value) =>
-        value.Replace('İ', 'i').Replace('ı', 'i').Replace('I', 'i').ToLowerInvariant();
+    private static string NormalizeForMatching(string value)
+    {
+        var decomposed = value
+            .Replace('İ', 'i')
+            .Replace('ı', 'i')
+            .Replace('I', 'i')
+            .ToLowerInvariant()
+            .Normalize(NormalizationForm.FormD);
+        return string.Concat(decomposed.Where(character =>
+            CharUnicodeInfo.GetUnicodeCategory(character) != UnicodeCategory.NonSpacingMark
+        )).Normalize(NormalizationForm.FormC);
+    }
 }
 
 public static class FinancialTotals

@@ -27,6 +27,7 @@ public sealed class Customer : Entity
     public string Email { get; set; } = "";
     public string Address { get; set; } = "";
     public string? TaxNumber { get; set; }
+    public DateOnly CustomerRegistrationDate { get; set; }
     public bool IsActive { get; set; } = true;
 }
 
@@ -38,6 +39,7 @@ public sealed class Employee : Entity
     public string Email { get; set; } = "";
     public string Position { get; set; } = "";
     public DateOnly HireDate { get; set; }
+    public DateOnly EmployeeRegistrationDate { get; set; }
     public decimal Salary { get; set; }
     public bool IsActive { get; set; } = true;
 }
@@ -84,9 +86,41 @@ public sealed class ZReport : Entity
     public decimal CashAmount { get; set; }
     public decimal CardAmount { get; set; }
     public decimal TotalAmount { get; set; }
+    public int OksFisleriCount { get; set; }
+    public decimal KdvToplami { get; set; }
+    public decimal SatisToplami { get; set; }
+    public decimal Nakit { get; set; }
+    public decimal Kredi { get; set; }
+    public decimal Diger { get; set; }
+    public int IptalCount { get; set; }
+    public decimal IptalKdvToplami { get; set; }
+    public decimal IptalSatisToplami { get; set; }
     public string? DocumentPath { get; set; }
     public string? OcrRawText { get; set; }
     public bool IsConfirmed { get; set; }
+}
+
+public sealed class EmployeeLeaveRecord : Entity
+{
+    public int EmployeeId { get; set; }
+    public Employee Employee { get; set; } = null!;
+    public DateOnly LeaveStartDate { get; set; }
+    public DateOnly LeaveEndDate { get; set; }
+    public int NumberOfDays { get; set; }
+    public string LeaveType { get; set; } = "Yıllık İzin";
+    public string Description { get; set; } = "";
+    public int LeaveYear { get; set; }
+}
+
+public sealed class EmployeeLeaveBalance : Entity
+{
+    public int EmployeeId { get; set; }
+    public Employee Employee { get; set; } = null!;
+    public int LeaveYear { get; set; }
+    public int EntitlementDays { get; set; }
+    public int UsedDays { get; set; }
+    public int RemainingDays { get; set; }
+    public DateTime CalculatedAt { get; set; }
 }
 
 public sealed class AuditLog : Entity

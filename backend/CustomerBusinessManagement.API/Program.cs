@@ -1,3 +1,4 @@
+using System.Security.Claims;
 using System.Text;
 using CustomerBusinessManagement.API;
 using CustomerBusinessManagement.Business;
@@ -57,15 +58,15 @@ builder.Services.AddDbContext<ApplicationDbContext>(o =>
     o.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection"))
 );
 
-// Kimlik doğrulamayı uygulama kullanıcısı ve EF Core deposuna bağla.
+// Standart ASP.NET Core Identity rol sistemi için gerekli tablolari ve role yönetimini kur.
 builder
-    .Services.AddIdentityCore<ApplicationUser>(o =>
+    .Services.AddIdentity<ApplicationUser, IdentityRole>(o =>
     {
         o.User.RequireUniqueEmail = true;
         o.Password.RequiredLength = 8;
     })
     .AddEntityFrameworkStores<ApplicationDbContext>()
-    .AddSignInManager();
+    .AddDefaultTokenProviders();
 var key =
     builder.Configuration["Jwt:Key"]
     ?? throw new InvalidOperationException(
@@ -76,7 +77,12 @@ if (Encoding.UTF8.GetByteCount(key) < 32)
 
 // API uç noktalarında imzalı JWT belirteçlerini doğrula.
 builder
-    .Services.AddAuthentication("Bearer")
+    .Services.AddAuthentication(options =>
+    {
+        options.DefaultAuthenticateScheme = "Bearer";
+        options.DefaultChallengeScheme = "Bearer";
+        options.DefaultForbidScheme = "Bearer";
+    })
     .AddJwtBearer(
         "Bearer",
         o =>
@@ -90,12 +96,24 @@ builder
                 ValidateIssuerSigningKey = true,
                 IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(key)),
                 ValidateLifetime = true,
+                NameClaimType = ClaimTypes.NameIdentifier,
             }
     );
-builder.Services.AddAuthorization();
+builder.Services.AddAuthorization(o =>
+{
+    o.AddPolicy(
+        AuthorizationPolicies.SuperAdmin,
+        AuthorizationPolicies.CreatePolicy(AuthorizationRoles.SuperAdmin)
+    );
+    o.AddPolicy(
+        AuthorizationPolicies.Admin,
+        AuthorizationPolicies.AdminPolicy
+    );
+});
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<IAuditLogService, AuditLogService>();
 builder.Services.AddScoped<ManagementService>();
+builder.Services.AddScoped<ILeaveService, LeaveService>();
 builder.Services.AddScoped<IZReportOcrService, ZReportOcrService>();
 builder.Services.AddCors(o =>
     o.AddDefaultPolicy(p =>
@@ -111,28 +129,93 @@ if (app.Environment.IsDevelopment())
     app.UseSwagger();
     app.UseSwaggerUI();
     using var scope = app.Services.CreateScope();
-    var manager = scope.ServiceProvider.GetRequiredService<UserManager<ApplicationUser>>();
-    var email = builder.Configuration["Admin:Email"];
-    var password = builder.Configuration["Admin:Password"];
-    if (
-        !string.IsNullOrWhiteSpace(email)
-        && !string.IsNullOrWhiteSpace(password)
-        && await manager.FindByEmailAsync(email) == null
-    )
+    var userManager = scope.ServiceProvider.GetRequiredService<UserManager<ApplicationUser>>();
+    var roleManager = scope.ServiceProvider.GetRequiredService<RoleManager<IdentityRole>>();
+
+    foreach (var roleName in new[] { AuthorizationRoles.Admin, AuthorizationRoles.SuperAdmin })
     {
-        var user = new ApplicationUser
+        if (!await roleManager.RoleExistsAsync(roleName))
         {
-            UserName = email,
-            Email = email,
-            EmailConfirmed = true,
-            FirstName = "System",
-            LastName = "Admin",
-        };
-        var result = await manager.CreateAsync(user, password);
-        if (!result.Succeeded)
-            throw new InvalidOperationException(
-                string.Join(";", result.Errors.Select(e => e.Description))
-            );
+            var roleResult = await roleManager.CreateAsync(new IdentityRole(roleName));
+            if (!roleResult.Succeeded)
+                throw new InvalidOperationException(
+                    $"Role creation failed for {roleName}: {string.Join(";", roleResult.Errors.Select(e => e.Description))}"
+                );
+        }
+    }
+
+    var adminEmail = builder.Configuration["Admin:Email"];
+    var adminPassword = builder.Configuration["Admin:Password"];
+    if (!string.IsNullOrWhiteSpace(adminEmail) && !string.IsNullOrWhiteSpace(adminPassword))
+    {
+        var existingAdmin = await userManager.FindByEmailAsync(adminEmail);
+        if (existingAdmin is null)
+        {
+            var adminUser = new ApplicationUser
+            {
+                UserName = adminEmail,
+                Email = adminEmail,
+                EmailConfirmed = true,
+                FirstName = "System",
+                LastName = "Admin",
+                IsActive = true,
+            };
+            var createResult = await userManager.CreateAsync(adminUser, adminPassword);
+            if (!createResult.Succeeded)
+                throw new InvalidOperationException(
+                    string.Join(";", createResult.Errors.Select(e => e.Description))
+                );
+            var roleResult = await userManager.AddToRoleAsync(adminUser, AuthorizationRoles.Admin);
+            if (!roleResult.Succeeded)
+                throw new InvalidOperationException(
+                    string.Join(";", roleResult.Errors.Select(e => e.Description))
+                );
+        }
+        else if (!await userManager.IsInRoleAsync(existingAdmin, AuthorizationRoles.Admin))
+        {
+            var roleResult = await userManager.AddToRoleAsync(existingAdmin, AuthorizationRoles.Admin);
+            if (!roleResult.Succeeded)
+                throw new InvalidOperationException(
+                    string.Join(";", roleResult.Errors.Select(e => e.Description))
+                );
+        }
+    }
+
+    var superAdminEmail = builder.Configuration["SuperAdmin:Email"];
+    var superAdminPassword = builder.Configuration["SuperAdmin:Password"];
+    if (!string.IsNullOrWhiteSpace(superAdminEmail) && !string.IsNullOrWhiteSpace(superAdminPassword))
+    {
+        var existingSuperAdmin = await userManager.FindByEmailAsync(superAdminEmail);
+        if (existingSuperAdmin is null)
+        {
+            var superAdminUser = new ApplicationUser
+            {
+                UserName = superAdminEmail,
+                Email = superAdminEmail,
+                EmailConfirmed = true,
+                FirstName = "System",
+                LastName = "SuperAdmin",
+                IsActive = true,
+            };
+            var createResult = await userManager.CreateAsync(superAdminUser, superAdminPassword);
+            if (!createResult.Succeeded)
+                throw new InvalidOperationException(
+                    string.Join(";", createResult.Errors.Select(e => e.Description))
+                );
+            var roleResult = await userManager.AddToRoleAsync(superAdminUser, AuthorizationRoles.SuperAdmin);
+            if (!roleResult.Succeeded)
+                throw new InvalidOperationException(
+                    string.Join(";", roleResult.Errors.Select(e => e.Description))
+                );
+        }
+        else if (!await userManager.IsInRoleAsync(existingSuperAdmin, AuthorizationRoles.SuperAdmin))
+        {
+            var roleResult = await userManager.AddToRoleAsync(existingSuperAdmin, AuthorizationRoles.SuperAdmin);
+            if (!roleResult.Succeeded)
+                throw new InvalidOperationException(
+                    string.Join(";", roleResult.Errors.Select(e => e.Description))
+                );
+        }
     }
 }
 app.UseCors();

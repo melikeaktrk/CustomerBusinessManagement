@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   BrowserRouter,
   Link,
@@ -706,6 +706,8 @@ const alanAdlari: Record<string, string> = {
   taxNumber: "Vergi numarası",
   createdAt: "Kayıt tarihi",
   updatedAt: "Güncelleme tarihi",
+  customerRegistrationDate: "Müşteri kayıt tarihi",
+  employeeRegistrationDate: "Personel kayıt tarihi",
   position: "Görev / pozisyon",
   hireDate: "İşe giriş tarihi",
   salary: "Maaş",
@@ -722,8 +724,15 @@ const alanAdlari: Record<string, string> = {
   cashAmount: "Nakit tutarı",
   cardAmount: "Kart tutarı",
   totalAmount: "Toplam tutar",
-  documentPath: "Belge yolu",
-  ocrRawText: "OCR ham metni",
+  oksFisleriCount: "ÖKC fişleri adedi",
+  kdvToplami: "Belge KDV toplamı",
+  satisToplami: "Belge satış toplamı",
+  nakit: "Belge tipi nakit toplamı",
+  kredi: "Belge tipi kredi toplamı",
+  diger: "Belge tipi diğer toplamı",
+  iptalCount: "İptal adedi",
+  iptalKdvToplami: "İptal KDV toplamı",
+  iptalSatisToplami: "İptal satış toplamı",
   isConfirmed: "Onay durumu",
   isActive: "Aktif",
   isCancelled: "İptal edildi",
@@ -824,11 +833,13 @@ function Dialog({
   children,
   onClose,
   actions,
+  className,
 }: {
   title: string;
   children: React.ReactNode;
   onClose: () => void;
   actions?: React.ReactNode;
+  className?: string;
 }) {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -843,7 +854,7 @@ function Dialog({
       onMouseDown={(event) => event.target === event.currentTarget && onClose()}
     >
       <section
-        className="dialog"
+        className={`dialog ${className ?? ""}`}
         role="dialog"
         aria-modal="true"
         aria-label={title}
@@ -926,6 +937,79 @@ function DetailPage({ title }: { title: string }) {
     </article>
   );
 }
+function LeaveRequestForm({
+  employee,
+  status,
+  busy,
+  setBusy,
+  setError,
+  onSaved,
+}: {
+  employee: Row;
+  status: Row;
+  busy: boolean;
+  setBusy: (busy: boolean) => void;
+  setError: (error: string) => void;
+  onSaved: () => Promise<void>;
+}) {
+  if (status.annualEntitlementDays === 0)
+    return (
+      <section className="leave-request-section">
+        <h3>İzin talebi</h3>
+        <p className="dialog-muted">
+          Yıllık izin hakkı, personel bir çalışma yılını tamamladığında başlar.
+          Hak kazanma tarihi işe giriş yıl dönümüdür.
+        </p>
+      </section>
+    );
+
+  return (
+    <section className="leave-request-section">
+      <h3>Yıllık izin talebi</h3>
+      <form
+        className="form-grid"
+        onSubmit={async (event) => {
+          event.preventDefault();
+          const form = event.currentTarget;
+          const data = Object.fromEntries(new FormData(form));
+          setBusy(true);
+          setError("");
+          try {
+            await api.post(`/employees/${employee.id}/leave`, {
+              employeeId: employee.id,
+              leaveStartDate: data.leaveStartDate,
+              leaveEndDate: data.leaveEndDate,
+              leaveType: "Yıllık İzin",
+              description: data.description,
+            });
+            await onSaved();
+            form.reset();
+          } catch (error: any) {
+            setError(error.message || "İzin kaydedilemedi.");
+          } finally {
+            setBusy(false);
+          }
+        }}
+      >
+        <label>
+          İzin başlangıç tarihi
+          <input name="leaveStartDate" type="date" required />
+        </label>
+        <label>
+          İzin bitiş tarihi
+          <input name="leaveEndDate" type="date" required />
+        </label>
+        <label className="full-width">
+          Açıklama
+          <input name="description" required />
+        </label>
+        <button className="primary" disabled={busy}>
+          {busy ? "Kaydediliyor..." : "İzin talebi oluştur"}
+        </button>
+      </form>
+    </section>
+  );
+}
 function DataPage() {
   const path = location.pathname;
   const segment = path.split("/")[1];
@@ -940,6 +1024,11 @@ function DataPage() {
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   const [deleteCandidate, setDeleteCandidate] = useState<Row | null>(null);
+  const [leaveEmployee, setLeaveEmployee] = useState<Row | null>(null);
+  const [leaveRequestFirst, setLeaveRequestFirst] = useState(false);
+  const [leaveStatus, setLeaveStatus] = useState<Row | null>(null);
+  const [leaveError, setLeaveError] = useState("");
+  const [leaveBusy, setLeaveBusy] = useState(false);
   const [notice, setNotice] = useState<{
     title: string;
     message: string;
@@ -982,6 +1071,15 @@ function DataPage() {
         .catch(() => setSummary(null));
     }
   }, [segment]);
+  useEffect(() => {
+    if (!leaveEmployee) return;
+    setLeaveStatus(null);
+    setLeaveError("");
+    api
+      .get(`/employees/${leaveEmployee.id}/leave`)
+      .then((response) => setLeaveStatus(response.data))
+      .catch((error) => setLeaveError(error.message || "İzin bilgileri alınamadı."));
+  }, [leaveEmployee]);
   const shown = rows.filter((row) => {
     if (!JSON.stringify(row).toLowerCase().includes(q.toLowerCase()))
       return false;
@@ -1010,7 +1108,7 @@ function DataPage() {
       return false;
     return true;
   });
-  function exportShownRows() {
+  async function exportShownRows() {
     const columns = Object.keys(shown[0] ?? {});
     if (!columns.length) {
       setNotice({
@@ -1019,24 +1117,53 @@ function DataPage() {
       });
       return;
     }
-    const escapeCell = (value: unknown) =>
-      `"${String(value ?? "").replaceAll('"', '""')}"`;
-    const csv = [
-      columns.map((column) => escapeCell(alanEtiketi(column))).join(","),
+    const tableBody = [
+      columns.map((column) => ({ text: alanEtiketi(column), style: "tableHeader" })),
       ...shown.map((row) =>
-        columns.map((column) => escapeCell(row[column])).join(","),
+        columns.map((column) => {
+          const value = row[column];
+          if (value == null || value === "") return "—";
+          if (/date|createdAt|updatedAt/i.test(column)) return formatDate(value);
+          if (column === "transactionType") return displayValue(column, value, segment);
+          if (typeof value === "boolean") return value ? "Evet" : "Hayır";
+          if (typeof value === "number" && /amount|salary|sales|vat|balance|nakit|kredi|diger/i.test(column))
+            return money(value);
+          return String(value);
+        }),
       ),
-    ].join("\r\n");
-    const url = URL.createObjectURL(
-      new Blob(["\uFEFF", csv], { type: "text/csv;charset=utf-8" }),
-    );
+    ];
+    const documentDefinition = {
+      pageSize: "A4" as const,
+      pageOrientation: (columns.length > 6 ? "landscape" : "portrait") as
+        | "landscape"
+        | "portrait",
+      pageMargins: [24, 32, 24, 32] as [number, number, number, number],
+      defaultStyle: { font: "Roboto", fontSize: 8 },
+      content: [
+        { text: `${sayfaAdlari[segment] ?? "Kayıtlar"} · Dışa Aktarım`, style: "title" },
+        { text: `Oluşturulma tarihi: ${formatDate(new Date())} · ${shown.length} kayıt`, style: "subtitle" },
+        { table: { headerRows: 1, widths: columns.map(() => "*"), body: tableBody }, layout: "lightHorizontalLines" },
+      ],
+      styles: {
+        title: { fontSize: 15, bold: true, color: "#263b35", margin: [0, 0, 0, 5] as [number, number, number, number] },
+        subtitle: { fontSize: 8, color: "#66736e", margin: [0, 0, 0, 14] as [number, number, number, number] },
+        tableHeader: { bold: true, color: "#ffffff", fillColor: "#16765c", fontSize: 8 },
+      },
+    };
+    const [{ default: pdfMake }, { default: pdfFonts }] = await Promise.all([
+      import("pdfmake/build/pdfmake"),
+      import("pdfmake/build/vfs_fonts"),
+    ]);
+    pdfMake.addVirtualFileSystem(pdfFonts);
+    const pdfBlob = await pdfMake.createPdf(documentDefinition).getBlob();
+    const url = URL.createObjectURL(pdfBlob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = `${segment}-${new Date().toISOString().slice(0, 10)}.csv`;
+    link.download = `${segment}-${new Date().toISOString().slice(0, 10)}.pdf`;
     document.body.append(link);
     link.click();
     link.remove();
-    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    window.setTimeout(() => URL.revokeObjectURL(url), 30_000);
   }
   return (
     <>
@@ -1080,7 +1207,7 @@ function DataPage() {
             ☷ Filtreler
           </button>
           <button className="filter-btn" onClick={exportShownRows}>
-            ↓ Dışa aktar
+            ↓ PDF indir
           </button>
         </div>
         {filtersOpen && (
@@ -1200,7 +1327,7 @@ function DataPage() {
                       <td>{r.companyName || "—"}</td>
                       <td>{r.phone}</td>
                       <td>{r.email}</td>
-                      <td>{formatDate(r.createdAt)}</td>
+                      <td>{formatDate(r.customerRegistrationDate ?? r.createdAt)}</td>
                     </>
                   ) : segment === "employees" ? (
                     <>
@@ -1259,6 +1386,12 @@ function DataPage() {
                     <button onClick={() => nav(`/${segment}/${r.id}/edit`)}>
                       Düzenle
                     </button>
+                    {segment === "employees" && (
+                      <>
+                        <button onClick={() => { setLeaveRequestFirst(false); setLeaveEmployee(r); }}>İzin raporu</button>
+                        <button onClick={() => { setLeaveRequestFirst(true); setLeaveEmployee(r); }}>İzin al</button>
+                      </>
+                    )}
                     <button onClick={() => setDeleteCandidate(r)}>Sil</button>
                   </td>
                 </tr>
@@ -1357,6 +1490,70 @@ function DataPage() {
           </p>
         </Dialog>
       )}
+      {leaveEmployee && (
+        <Dialog
+          className="leave-dialog"
+          title={`${capitalizeWords(leaveEmployee.firstName)} ${capitalizeWords(leaveEmployee.lastName)} · İzin durumu`}
+          onClose={() => setLeaveEmployee(null)}
+        >
+          {!leaveStatus && leaveError ? (
+            <p className="error" role="alert">{leaveError}</p>
+          ) : !leaveStatus ? (
+            <p className="empty">İzin bilgileri yükleniyor...</p>
+          ) : (
+            <>
+              {leaveError && <p className="error" role="alert">{leaveError}</p>}
+              <div className="stats summary-stats">
+                <article className="stat"><span>Yıllık hak</span><strong>{leaveStatus.annualEntitlementDays} gün</strong></article>
+                <article className="stat"><span>Kullanılan</span><strong>{leaveStatus.usedDays} gün</strong></article>
+                <article className="stat"><span>Kalan</span><strong>{leaveStatus.remainingDays} gün</strong></article>
+              </div>
+              {leaveRequestFirst && (
+                <LeaveRequestForm
+                  employee={leaveEmployee}
+                  status={leaveStatus}
+                  busy={leaveBusy}
+                  setBusy={setLeaveBusy}
+                  setError={setLeaveError}
+                  onSaved={async () => {
+                    const response = await api.get(`/employees/${leaveEmployee.id}/leave`);
+                    setLeaveStatus(response.data);
+                  }}
+                />
+              )}
+              <h3>Aylık izin raporu</h3>
+              <div className="table-wrap">
+                <table><thead><tr><th>YIL</th><th>AY</th><th>KULLANILAN GÜN</th></tr></thead>
+                  <tbody>{(leaveStatus.monthlyUsage ?? []).map((item: Row) => (
+                    <tr key={`${item.year}-${item.month}`}><td>{item.year}</td><td>{new Intl.DateTimeFormat("tr-TR", { month: "long" }).format(new Date(item.year, item.month - 1, 1))}</td><td>{item.days}</td></tr>
+                  ))}{!leaveStatus.monthlyUsage?.length && <tr><td colSpan={3}>Henüz izin kullanılmamış.</td></tr>}</tbody>
+                </table>
+              </div>
+              <h3>İzin geçmişi</h3>
+              <div className="table-wrap">
+                <table><thead><tr><th>BAŞLANGIÇ</th><th>BİTİŞ</th><th>GÜN</th><th>AÇIKLAMA</th><th></th></tr></thead>
+                  <tbody>{(leaveStatus.leaveHistory ?? []).map((item: Row) => (
+                    <tr key={item.id}><td>{formatDate(item.leaveStartDate)}</td><td>{formatDate(item.leaveEndDate)}</td><td>{item.numberOfDays}</td><td>{item.description}</td><td><button disabled={leaveBusy} onClick={async () => { setLeaveBusy(true); try { await api.delete(`/employee-leaves/${item.id}`); const response = await api.get(`/employees/${leaveEmployee.id}/leave`); setLeaveStatus(response.data); } catch (error: any) { setLeaveError(error.message || "İzin kaydı silinemedi."); } finally { setLeaveBusy(false); } }}>Sil</button></td></tr>
+                  ))}{!leaveStatus.leaveHistory?.length && <tr><td colSpan={5}>Henüz izin kaydı yok.</td></tr>}</tbody>
+                </table>
+              </div>
+              {!leaveRequestFirst && (
+                <LeaveRequestForm
+                  employee={leaveEmployee}
+                  status={leaveStatus}
+                  busy={leaveBusy}
+                  setBusy={setLeaveBusy}
+                  setError={setLeaveError}
+                  onSaved={async () => {
+                    const response = await api.get(`/employees/${leaveEmployee.id}/leave`);
+                    setLeaveStatus(response.data);
+                  }}
+                />
+              )}
+            </>
+          )}
+        </Dialog>
+      )}
       {notice && (
         <Dialog
           title={notice.title}
@@ -1414,7 +1611,7 @@ function FormPage() {
           "email",
           "address",
           "taxNumber",
-          "isActive",
+          "customerRegistrationDate",
         ]
       : kind === "employees"
         ? [
@@ -1424,8 +1621,8 @@ function FormPage() {
             "email",
             "position",
             "hireDate",
+            "employeeRegistrationDate",
             "salary",
-            "isActive",
           ]
         : kind === "accounting"
           ? [
@@ -1462,9 +1659,7 @@ function FormPage() {
     >;
     if (d.firstName) d.firstName = capitalizeWords(d.firstName);
     if (d.lastName) d.lastName = capitalizeWords(d.lastName);
-    if (kind === "customers" || kind === "employees") {
-      d.isActive = new FormData(e.currentTarget).has("isActive");
-    }
+    if (kind === "customers" || kind === "employees") d.isActive = true;
     if (kind === "zreports") d.isConfirmed = true;
     if (kind === "zreports") {
       d.netSales = Number(d.grossSales ?? 0) - Number(d.totalVat ?? 0);
@@ -1504,16 +1699,7 @@ function FormPage() {
           {labels.map((k) => (
             <label key={k}>
               {alanEtiketi(k)}
-              {k === "isActive" ? (
-                <span className="checkbox-field">
-                  <input
-                    type="checkbox"
-                    name={k}
-                    defaultChecked={values[k] ?? true}
-                  />
-                  <span>Bu kaydı etkin tut</span>
-                </span>
-              ) : k === "transactionType" ? (
+              {k === "transactionType" ? (
                 <select
                   name={k}
                   defaultValue={
@@ -1555,6 +1741,11 @@ function FormPage() {
                           Number(values.cardAmount ?? 0)
                         : k.toLowerCase().includes("date") && values[k]
                           ? String(values[k]).slice(0, 10)
+                          : (k === "customerRegistrationDate" ||
+                            k === "employeeRegistrationDate") && !editId
+                            ? new Date(Date.now() - new Date().getTimezoneOffset() * 60000)
+                                .toISOString()
+                                .slice(0, 10)
                           : (values[k] ?? "")
                   }
                   required={
@@ -1622,6 +1813,8 @@ function Upload() {
   const [isReading, setIsReading] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [previewUrl, setPreviewUrl] = useState("");
+  const [cameraStream, setCameraStream] = useState<MediaStream | null>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
   const [notice, setNotice] = useState<{
     title: string;
     message: string;
@@ -1634,6 +1827,13 @@ function Upload() {
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
   }, [nav]);
+  useEffect(() => {
+    if (videoRef.current && cameraStream) {
+      videoRef.current.srcObject = cameraStream;
+      void videoRef.current.play();
+    }
+    return () => cameraStream?.getTracks().forEach((track) => track.stop());
+  }, [cameraStream]);
   useEffect(() => {
     return () => {
       if (previewUrl) URL.revokeObjectURL(previewUrl);
@@ -1657,6 +1857,49 @@ function Upload() {
     );
     setFile(candidate);
     setResult(null);
+  }
+  async function startCamera() {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setNotice({
+        title: "Kamera kullanılamıyor",
+        message: "Kamera erişimi için sayfayı localhost veya HTTPS üzerinden açın.",
+      });
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: "environment" } },
+        audio: false,
+      });
+      setCameraStream(stream);
+      setNotice(null);
+    } catch {
+      setNotice({
+        title: "Kamera açılamadı",
+        message: "Tarayıcı izinlerini ve kameranın başka bir uygulama tarafından kullanılmadığını kontrol edin.",
+      });
+    }
+  }
+  function stopCamera() {
+    cameraStream?.getTracks().forEach((track) => track.stop());
+    setCameraStream(null);
+  }
+  async function capturePhoto() {
+    const video = videoRef.current;
+    if (!video || video.videoWidth === 0 || video.videoHeight === 0) return;
+    const canvas = document.createElement("canvas");
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    canvas.getContext("2d")?.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const blob = await new Promise<Blob | null>((resolve) =>
+      canvas.toBlob(resolve, "image/jpeg", 0.92),
+    );
+    if (!blob) {
+      setNotice({ title: "Fotoğraf alınamadı", message: "Kameradan görüntü oluşturulamadı. Yeniden deneyin." });
+      return;
+    }
+    chooseFile(new File([blob], `z-raporu-${Date.now()}.jpg`, { type: "image/jpeg" }));
+    stopCamera();
   }
   async function read() {
     if (!file || isReading) return;
@@ -1699,8 +1942,17 @@ function Upload() {
       "cashAmount",
       "cardAmount",
       "totalAmount",
+      "kdvToplami",
+      "satisToplami",
+      "diger",
+      "iptalKdvToplami",
+      "iptalSatisToplami",
     ])
-      d[k] = Number(d[k] || 0);
+      d[k] = Number(d[k] || result?.[k] || 0);
+    d.nakit = Number(d.documentNakit || result?.nakit || 0);
+    d.kredi = Number(d.documentKredi || result?.kredi || 0);
+    for (const k of ["oksFisleriCount", "iptalCount"])
+      d[k] = Number(d[k] || result?.[k] || 0);
     d.documentPath = result?.documentPath;
     d.ocrRawText = result?.ocrRawText;
     d.isConfirmed = true;
@@ -1737,28 +1989,49 @@ function Upload() {
           >
             ×
           </button>
-          <label
-            className={`dropzone ${isDragging ? "dragging" : ""}`}
-            onDragOver={(event) => {
-              event.preventDefault();
-              setIsDragging(true);
-            }}
-            onDragLeave={() => setIsDragging(false)}
-            onDrop={(event) => {
-              event.preventDefault();
-              setIsDragging(false);
-              chooseFile(event.dataTransfer.files[0]);
-            }}
-          >
-            ▧<h2>Z raporu dosyası seçin</h2>
-            <p>Dosyayı buraya sürükleyin veya seçmek için tıklayın</p>
-            <small>PNG, JPG veya PDF · En fazla 10 MB</small>
-            <input
-              type="file"
-              accept=".png,.jpg,.jpeg,.pdf"
-              onChange={(e) => chooseFile(e.target.files?.[0])}
-            />
-          </label>
+          <div className="upload-source-row">
+            <label
+              className={`dropzone ${isDragging ? "dragging" : ""}`}
+              onDragOver={(event) => {
+                event.preventDefault();
+                setIsDragging(true);
+              }}
+              onDragLeave={() => setIsDragging(false)}
+              onDrop={(event) => {
+                event.preventDefault();
+                setIsDragging(false);
+                chooseFile(event.dataTransfer.files[0]);
+              }}
+            >
+              ▧<h2>Z raporu dosyası seçin</h2>
+              <p>Dosyayı buraya sürükleyin veya seçmek için tıklayın</p>
+              <small>PNG, JPG veya PDF · En fazla 10 MB</small>
+              <input
+                type="file"
+                accept=".png,.jpg,.jpeg,.pdf"
+                onChange={(e) => chooseFile(e.target.files?.[0])}
+              />
+            </label>
+            <div className={`camera-tools ${cameraStream ? "camera-active" : ""}`}>
+            {!cameraStream ? (
+              <button type="button" className="filter-btn" onClick={startCamera}>
+                ◉ Kamerayı aç
+              </button>
+            ) : (
+              <section className="camera-panel" aria-label="Kamera ön izlemesi">
+                <video ref={videoRef} autoPlay muted playsInline />
+                <div className="camera-actions">
+                  <button type="button" className="primary" onClick={capturePhoto}>
+                    ◉ Fotoğraf çek
+                  </button>
+                  <button type="button" className="filter-btn" onClick={stopCamera}>
+                    Kamerayı kapat
+                  </button>
+                </div>
+              </section>
+            )}
+            </div>
+          </div>
           {file && (
             <div className="file-preview">
               {previewUrl ? (
@@ -1836,6 +2109,31 @@ function Upload() {
                       min="0"
                       step="0.01"
                       required
+                      defaultValue={result[key] ?? ""}
+                    />
+                  </label>
+                ))}
+              </div>
+              <h3>Belge tipleri</h3>
+              <div className="form-grid">
+                {[
+                  ["oksFisleriCount", "ÖKC fişleri adedi"],
+                  ["kdvToplami", "Belge KDV toplamı"],
+                  ["satisToplami", "Belge satış toplamı"],
+                  ["documentNakit", "Belge tipi nakit toplamı"],
+                  ["documentKredi", "Belge tipi kredi toplamı"],
+                  ["diger", "Belge tipi diğer toplamı"],
+                  ["iptalCount", "İptal adedi"],
+                  ["iptalKdvToplami", "İptal KDV toplamı"],
+                  ["iptalSatisToplami", "İptal satış toplamı"],
+                ].map(([key, label]) => (
+                  <label key={key}>
+                    {label}
+                    <input
+                      name={key}
+                      type="number"
+                      min="0"
+                      step={key.endsWith("Count") ? "1" : "0.01"}
                       defaultValue={result[key] ?? ""}
                     />
                   </label>

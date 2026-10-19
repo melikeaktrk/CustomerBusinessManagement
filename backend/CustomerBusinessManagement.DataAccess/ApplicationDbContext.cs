@@ -5,13 +5,15 @@ using Microsoft.EntityFrameworkCore;
 namespace CustomerBusinessManagement.DataAccess;
 
 public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> options)
-    : IdentityUserContext<ApplicationUser>(options)
+    : IdentityDbContext<ApplicationUser>(options)
 {
     public DbSet<Customer> Customers => Set<Customer>();
     public DbSet<Employee> Employees => Set<Employee>();
     public DbSet<AccountingTransaction> AccountingTransactions => Set<AccountingTransaction>();
     public DbSet<CashTransaction> CashTransactions => Set<CashTransaction>();
     public DbSet<ZReport> ZReports => Set<ZReport>();
+    public DbSet<EmployeeLeaveRecord> EmployeeLeaveRecords => Set<EmployeeLeaveRecord>();
+    public DbSet<EmployeeLeaveBalance> EmployeeLeaveBalances => Set<EmployeeLeaveBalance>();
     public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
 
     protected override void OnModelCreating(ModelBuilder b)
@@ -27,6 +29,19 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
         b.Entity<ZReport>().Property(x => x.CashAmount).HasPrecision(18, 2);
         b.Entity<ZReport>().Property(x => x.CardAmount).HasPrecision(18, 2);
         b.Entity<ZReport>().Property(x => x.TotalAmount).HasPrecision(18, 2);
+        b.Entity<ZReport>().Property(x => x.KdvToplami).HasPrecision(18, 2);
+        b.Entity<ZReport>().Property(x => x.SatisToplami).HasPrecision(18, 2);
+        b.Entity<ZReport>().Property(x => x.Nakit).HasPrecision(18, 2);
+        b.Entity<ZReport>().Property(x => x.Kredi).HasPrecision(18, 2);
+        b.Entity<ZReport>().Property(x => x.Diger).HasPrecision(18, 2);
+        b.Entity<ZReport>().Property(x => x.IptalKdvToplami).HasPrecision(18, 2);
+        b.Entity<ZReport>().Property(x => x.IptalSatisToplami).HasPrecision(18, 2);
+        b.Entity<EmployeeLeaveRecord>().HasIndex(x => new { x.EmployeeId, x.LeaveStartDate, x.LeaveEndDate });
+        b.Entity<EmployeeLeaveBalance>().HasIndex(x => new { x.EmployeeId, x.LeaveYear }).IsUnique();
+        b.Entity<EmployeeLeaveRecord>().Property(x => x.NumberOfDays).HasPrecision(5, 0);
+        b.Entity<EmployeeLeaveBalance>().Property(x => x.EntitlementDays).HasPrecision(5, 0);
+        b.Entity<EmployeeLeaveBalance>().Property(x => x.UsedDays).HasPrecision(5, 0);
+        b.Entity<EmployeeLeaveBalance>().Property(x => x.RemainingDays).HasPrecision(5, 0);
     }
 
     public override Task<int> SaveChangesAsync(CancellationToken ct = default)
