@@ -8,11 +8,9 @@ using CustomerBusinessManagement.Entities;
 using FluentValidation;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Identity;
-using Microsoft.AspNetCore.DataProtection.Repositories;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
-using System.Xml.Linq;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -238,6 +236,7 @@ if (app.Environment.IsProduction())
     try
     {
         using var scope = app.Services.CreateScope();
+
         var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
         db.Database.Migrate();
         app.Logger.LogInformation("Pending Entity Framework Core migrations were applied successfully.");
@@ -252,27 +251,3 @@ if (app.Environment.IsProduction())
 }
 
 app.Run();
-
-public partial class Program { }
-
-sealed class InMemoryXmlRepository : IXmlRepository
-{
-    private readonly object sync = new();
-    private readonly List<XElement> elements = new();
-
-    public IReadOnlyCollection<XElement> GetAllElements()
-    {
-        lock (sync)
-        {
-            return elements.Select(element => new XElement(element)).ToArray();
-        }
-    }
-
-    public void StoreElement(XElement element, string friendlyName)
-    {
-        lock (sync)
-        {
-            elements.Add(new XElement(element));
-        }
-    }
-}
