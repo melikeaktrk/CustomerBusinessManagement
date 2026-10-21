@@ -133,8 +133,10 @@ app.UseSwagger();
 app.UseSwaggerUI(c =>
 {
     c.SwaggerEndpoint("/swagger/v1/swagger.json", "Customer Business Management API V1");
-    c.RoutePrefix = string.Empty;
+    c.RoutePrefix = "swagger";
 });
+app.UseDefaultFiles();
+app.UseStaticFiles();
 if (app.Environment.IsDevelopment())
 {
     using var scope = app.Services.CreateScope();
@@ -231,6 +233,8 @@ app.UseCors();
 app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();
+app.MapFallback("/api/{**path}", () => Results.NotFound());
+app.MapFallbackToFile("index.html");
 
 if (app.Environment.IsProduction())
 {
