@@ -24,6 +24,10 @@ public sealed class ZReportOcrService(IConfiguration configuration) : IZReportOc
 {
     public async Task<OcrResult> ReadAsync(IFormFile file, CancellationToken ct)
     {
+        var ocrSpaceKey = configuration["Ocr:OcrSpaceApiKey"];
+        if (!string.IsNullOrWhiteSpace(ocrSpaceKey))
+            return ZReportOcrParser.Parse(await ReadWithOcrSpaceAsync(file, ocrSpaceKey.Trim(), ct));
+
         // Boş değer bırakıldığında Windows PATH kullanılır; ortam değişkenleri JSON ayarlarını ezer.
         var tesseract = ResolveExecutable(configuration["Ocr:TesseractPath"], "tesseract.exe");
         var languages = string.IsNullOrWhiteSpace(configuration["Ocr:Languages"])
@@ -49,6 +53,66 @@ public sealed class ZReportOcrService(IConfiguration configuration) : IZReportOc
         }
 
         return ZReportOcrParser.Parse(rawText);
+    }
+
+    private static readonly HttpClient OcrSpaceClient = new() { Timeout = TimeSpan.FromSeconds(60) };
+
+    private async Task<string> ReadWithOcrSpaceAsync(IFormFile file, string apiKey, CancellationToken ct)
+    {
+        var isPdf = Path.GetExtension(file.FileName).Equals(".pdf", StringComparison.OrdinalIgnoreCase);
+        using var form = new MultipartFormDataContent();
+        form.Add(new StringContent(apiKey), "apikey");
+        form.Add(new StringContent("tur"), "language");
+        form.Add(new StringContent("true"), "isTable");
+        form.Add(new StringContent("true"), "scale");
+        form.Add(new StringContent(isPdf ? "1" : (configuration["Ocr:OcrSpaceEngine"] ?? "2")), "OCREngine");
+
+        await using var stream = file.OpenReadStream();
+        using var fileContent = new StreamContent(stream);
+        fileContent.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(
+            string.IsNullOrWhiteSpace(file.ContentType) ? "application/octet-stream" : file.ContentType);
+        form.Add(fileContent, "file", file.FileName);
+
+        HttpResponseMessage response;
+        try
+        {
+            response = await OcrSpaceClient.PostAsync("https://api.ocr.space/parse/image", form, ct);
+        }
+        catch (HttpRequestException)
+        {
+            throw new OcrProviderUnavailableException("OCR servisine ulaşılamadı.");
+        }
+        catch (TaskCanceledException) when (!ct.IsCancellationRequested)
+        {
+            throw new OcrProviderUnavailableException("OCR servisi zaman aşımına uğradı.");
+        }
+
+        using (response)
+        {
+            if (!response.IsSuccessStatusCode)
+                throw new OcrProviderUnavailableException("OCR servisi geçici olarak kullanılamıyor.");
+
+            using var doc = await System.Text.Json.JsonDocument.ParseAsync(
+                await response.Content.ReadAsStreamAsync(ct), cancellationToken: ct);
+            var root = doc.RootElement;
+
+            if (root.TryGetProperty("IsErroredOnProcessing", out var errored)
+                && errored.ValueKind == System.Text.Json.JsonValueKind.True)
+                throw new OcrProviderUnavailableException(
+                    "OCR servisi dosyayı işleyemedi (dosya çok büyük olabilir).");
+
+            if (!root.TryGetProperty("ParsedResults", out var results)
+                || results.ValueKind != System.Text.Json.JsonValueKind.Array
+                || results.GetArrayLength() == 0)
+                throw new OcrDocumentProcessingException(
+                    "Dosya doğrulandı ancak OCR motoru içeriği okuyamadı. Dosyanın bozuk olmadığını ve desteklenen bir PNG, JPG veya PDF olduğunu kontrol edin.");
+
+            var texts = new List<string>();
+            foreach (var r in results.EnumerateArray())
+                if (r.TryGetProperty("ParsedText", out var t) && t.GetString() is { } s)
+                    texts.Add(s);
+            return string.Join("\n", texts);
+        }
     }
 
     private async Task<string> ReadPdfAsync(
@@ -127,11 +191,10 @@ public sealed class ZReportOcrService(IConfiguration configuration) : IZReportOc
             if (!process.Start())
                 throw new OcrProviderUnavailableException("OCR işlemi başlatılamadı.");
         }
-        catch (System.ComponentModel.Win32Exception ex)
+        catch (System.ComponentModel.Win32Exception)
         {
-            // GEÇİCİ TEŞHİS: teşhisten sonra geri alınacak
             throw new OcrProviderUnavailableException(
-                $"OCR BASLATILAMADI. Yol: {executable} | Win32 kod: {ex.NativeErrorCode} | {ex.Message}"
+                "OCR bağımlılığı bulunamadı veya çalıştırılamadı."
             );
         }
 
