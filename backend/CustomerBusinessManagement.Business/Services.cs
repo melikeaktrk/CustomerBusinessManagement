@@ -127,10 +127,11 @@ public sealed class ZReportOcrService(IConfiguration configuration) : IZReportOc
             if (!process.Start())
                 throw new OcrProviderUnavailableException("OCR işlemi başlatılamadı.");
         }
-        catch (System.ComponentModel.Win32Exception)
+        catch (System.ComponentModel.Win32Exception ex)
         {
+            // GEÇİCİ TEŞHİS: teşhisten sonra geri alınacak
             throw new OcrProviderUnavailableException(
-                $"OCR bağımlılığı bulunamadı veya çalıştırılamadı ({Path.GetFileName(executable)}). TesseractPath ve PDF kullanılıyorsa PdfToPpmPath ayarlarını kontrol edin."
+                $"OCR BASLATILAMADI. Yol: {executable} | Win32 kod: {ex.NativeErrorCode} | {ex.Message}"
             );
         }
 
