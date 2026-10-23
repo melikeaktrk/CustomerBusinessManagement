@@ -59,6 +59,31 @@ The API runs the real Tesseract CLI; `tur+eng` is the default language pair. Tes
    The language list must include `eng` and `tur`. The API passes `Ocr:TessdataPath` to Tesseract explicitly, so the service process does not depend on a global `TESSDATA_PREFIX` setting.
 5. PNG and JPG are processed directly. PDF pages are rendered using Poppler's `pdftoppm`; install Poppler for Windows and set `$env:Ocr__PdfToPpmPath` to the actual `pdftoppm.exe` path. The API returns an understandable 503 when an OCR executable or language model is missing. A document the installed engine cannot decode is stored and returns a manual-entry path instead of invented amounts.
 
+### Hosting the OCR tools with the published API
+
+For a Windows hosting provider, the published site can contain the tools in
+`tools/tesseract/` next to the API files:
+
+```text
+wwwroot/
+├── CustomerBusinessManagement.API.dll
+├── appsettings.Production.json
+└── tools/
+    └── tesseract/
+        ├── tesseract.exe
+        ├── *.dll
+        └── tessdata/
+            ├── eng.traineddata
+            └── tur.traineddata
+```
+
+The production settings use `tools/tesseract/tesseract.exe` and
+`tools/tesseract/tessdata`. These are resolved relative to the published API
+directory, so the folder must be uploaded at that exact level. PDF OCR also
+requires Poppler's `pdftoppm.exe`; PNG/JPG OCR only requires Tesseract and the
+language files. After uploading or replacing these files, restart the site and
+verify the API process can execute `tesseract.exe`.
+
 The OCR parser returns null for unrecognized amounts, tolerates Turkish/English labels and common Turkish/decimal currency separators, and derives net/total only when their source amounts are both recognized. The admin must review and confirm every Z report. Files are signature-checked and stored under `App_Data/ZReports` inside the API content root, then served only through the authenticated report-document endpoint.
 
 ## Validate
@@ -72,4 +97,3 @@ cd ..\frontend
 npm install
 npm run build
 ```
-

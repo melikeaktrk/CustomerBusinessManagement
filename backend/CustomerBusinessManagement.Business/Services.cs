@@ -29,7 +29,7 @@ public sealed class ZReportOcrService(IConfiguration configuration) : IZReportOc
         var languages = string.IsNullOrWhiteSpace(configuration["Ocr:Languages"])
             ? "tur+eng"
             : configuration["Ocr:Languages"]!;
-        var tessdataPath = configuration["Ocr:TessdataPath"];
+        var tessdataPath = ResolveConfiguredPath(configuration["Ocr:TessdataPath"]);
         var fileExtension = Path.GetExtension(file.FileName);
         string rawText;
 
@@ -161,7 +161,20 @@ public sealed class ZReportOcrService(IConfiguration configuration) : IZReportOc
     }
 
     private static string ResolveExecutable(string? configuredPath, string pathCommand) =>
-        string.IsNullOrWhiteSpace(configuredPath) ? pathCommand : configuredPath.Trim();
+        string.IsNullOrWhiteSpace(configuredPath)
+            ? pathCommand
+            : ResolveConfiguredPath(configuredPath)!;
+
+    private static string? ResolveConfiguredPath(string? configuredPath)
+    {
+        if (string.IsNullOrWhiteSpace(configuredPath))
+            return null;
+
+        var path = configuredPath.Trim();
+        return Path.IsPathRooted(path)
+            ? path
+            : Path.GetFullPath(path, AppContext.BaseDirectory);
+    }
 
     private static List<string> BuildTesseractArguments(string languages, string? tessdataPath)
     {
