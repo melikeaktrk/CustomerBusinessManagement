@@ -420,6 +420,20 @@ header {
   color: #65716c;
   font-size: 9px;
 }
+.chart-filters {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.chart-filters input {
+  width: 132px;
+  border: 1px solid #e8edeb;
+  background: white;
+  border-radius: 6px;
+  padding: 6px 8px;
+  color: #65716c;
+  font-size: 10px;
+}
 .chart {
   display: flex;
   margin-top: 20px;
@@ -784,6 +798,12 @@ footer i {
 }
 .leave-dialog .form-grid {
   margin-top: 20px;
+}
+.leave-end-preview {
+  grid-column: 1 / -1;
+  margin: -4px 0 0;
+  color: #65716c;
+  font-size: 12px;
 }
 @media (max-width: 600px) {
   .dialog-backdrop {
@@ -1302,6 +1322,24 @@ footer i {
   border-radius: 6px;
   padding: 0 9px;
   font-size: 11px;
+}
+.ocr-document-value {
+  display: grid;
+  gap: 7px;
+  min-height: 55px;
+  padding: 9px;
+  border: 1px solid #e4e9e7;
+  border-radius: 6px;
+  background: #f8faf9;
+}
+.ocr-document-value span {
+  color: #6e7b76;
+  font-size: 10px;
+  font-weight: 600;
+}
+.ocr-document-value strong {
+  color: #34443e;
+  font-size: 12px;
 }
 .ocr-review details {
   margin-top: 15px;

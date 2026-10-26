@@ -228,6 +228,36 @@ public class ApiModuleTests
     }
 
     [Fact]
+    public void OcrParserExtractsDocumentTypeValuesFromReceiptLayout()
+    {
+        var result = ZReportOcrParser.Parse(
+            """
+            BELGE TİPLERİ
+            ÖKC FİŞLERİ 88
+            -KDV TOPLAMI *1.989,98
+            -SATIŞ TOPLAMI *21.890,00
+            -NAKİT *4.425,00
+            -KREDİ *17.465,00
+            -DİĞER *0,00
+            İPTAL 10
+            -KDV TOPLAMI *194,07
+            -SATIŞ TOPLAMI *2.135,00
+            SAYAÇLAR
+            """
+        );
+
+        Assert.Equal(88, result.OksFisleriCount);
+        Assert.Equal(1989.98m, result.KdvToplami);
+        Assert.Equal(21890.00m, result.SatisToplami);
+        Assert.Equal(4425.00m, result.Nakit);
+        Assert.Equal(17465.00m, result.Kredi);
+        Assert.Equal(0m, result.Diger);
+        Assert.Equal(10, result.IptalCount);
+        Assert.Equal(194.07m, result.IptalKdvToplami);
+        Assert.Equal(2135.00m, result.IptalSatisToplami);
+    }
+
+    [Fact]
     public async Task LeaveRequiresCompletedWorkYearAndCountsWeekdaysAcrossMonths()
     {
         await using var db = CreateDb();

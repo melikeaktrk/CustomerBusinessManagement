@@ -342,7 +342,7 @@ function Shell() {
           ) : path.includes("/new") || path.includes("/edit") ? (
             <FormPage />
           ) : path.includes("/zreports/upload") ? (
-            <DataPage key="/zreports" />
+            <DataPage key={path} />
           ) : detail ? (
             <DetailPage title={title} />
           ) : (
@@ -365,6 +365,13 @@ function Dashboard() {
   const [dashboardLoading, setDashboardLoading] = useState(true);
   const [dashboardError, setDashboardError] = useState("");
   const [dashboardRefresh, setDashboardRefresh] = useState(0);
+  const [financeTransactions, setFinanceTransactions] = useState<Row[]>([]);
+  const [financeTransactionsLoading, setFinanceTransactionsLoading] = useState(true);
+  const [chartRange, setChartRange] = useState<"week" | "month" | "day">("week");
+  const [chartDay, setChartDay] = useState(() => {
+    const date = new Date();
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+  });
   const [selectedTransaction, setSelectedTransaction] = useState<Row | null>(
     null,
   );
@@ -387,6 +394,20 @@ function Dashboard() {
       isCurrentRequest = false;
     };
   }, [dashboardRefresh]);
+  useEffect(() => {
+    let isCurrentRequest = true;
+    api.get("/AccountingTransactions")
+      .then((response) => {
+        if (isCurrentRequest) setFinanceTransactions(response.data ?? []);
+      })
+      .catch(() => {
+        if (isCurrentRequest) setFinanceTransactions([]);
+      })
+      .finally(() => {
+        if (isCurrentRequest) setFinanceTransactionsLoading(false);
+      });
+    return () => { isCurrentRequest = false; };
+  }, []);
   const accounting = (d?.recentAccountingTransactions ?? []) as Row[];
   const cashTransactions = (d?.recentCashTransactions ?? []) as Row[];
   const reports = (d?.recentZReports ?? []) as Row[];
@@ -407,7 +428,7 @@ function Dashboard() {
   );
   // Finans grafiği yalnızca muhasebe kayıtlarını kullanır; kasa/Z raporu aynı geliri tekrar saydırmaz.
   const financeByDate = new Map<string, { income: number; expense: number }>();
-  for (const row of accounting.filter((item) => !item.isCancelled)) {
+  for (const row of financeTransactions.filter((item) => !item.isCancelled)) {
     const date = String(row.transactionDate ?? "").slice(0, 10);
     if (!date) continue;
     const totals = financeByDate.get(date) ?? { income: 0, expense: 0 };
@@ -416,10 +437,20 @@ function Dashboard() {
     if (type === "Expense") totals.expense += Number(row.amount ?? 0);
     financeByDate.set(date, totals);
   }
-  const chartRows = [...financeByDate.entries()]
-    .map(([date, totals]) => ({ date, ...totals }))
-    .sort((a, b) => a.date.localeCompare(b.date))
-    .slice(-6);
+  const today = new Date();
+  const rangeEnd = chartRange === "day"
+    ? new Date(`${chartDay}T00:00:00`)
+    : new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  const rangeStart = chartRange === "week"
+    ? new Date(rangeEnd.getFullYear(), rangeEnd.getMonth(), rangeEnd.getDate() - ((rangeEnd.getDay() + 6) % 7))
+    : chartRange === "month"
+      ? new Date(rangeEnd.getFullYear(), rangeEnd.getMonth(), 1)
+      : rangeEnd;
+  const chartRows: { date: string; income: number; expense: number }[] = [];
+  for (const date = new Date(rangeStart); date <= rangeEnd; date.setDate(date.getDate() + 1)) {
+    const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+    chartRows.push({ date: key, ...(financeByDate.get(key) ?? { income: 0, expense: 0 }) });
+  }
   const maxAmount = Math.max(
     0,
     ...chartRows.flatMap((row) => [row.income, row.expense]),
@@ -513,11 +544,18 @@ function Dashboard() {
                 Muhasebe kayıtlarına göre tarihler bazında gelir ve giderler
               </p>
             </div>
-            <span className="filter-btn">Son 6 tarih</span>
+            <div className="chart-filters">
+              <select aria-label="Grafik tarih aralığı" value={chartRange} onChange={(event) => setChartRange(event.target.value as "week" | "month" | "day")}>
+                <option value="week">Bu hafta</option>
+                <option value="month">Bu ay</option>
+                <option value="day">Belirli gün</option>
+              </select>
+              {chartRange === "day" && <input aria-label="Grafik günü" type="date" value={chartDay} onChange={(event) => setChartDay(event.target.value)} />}
+            </div>
           </div>
           {chartRows.length === 0 || maxAmount === 0 ? (
             <p className="empty chart-empty">
-              {dashboardLoading
+              {dashboardLoading || financeTransactionsLoading
                 ? "Finansal veriler yükleniyor..."
                 : chartRows.length === 0
                   ? "Grafik için henüz muhasebe hareketi yok."
@@ -590,7 +628,7 @@ function Dashboard() {
                   })}
                 </svg>
                 <div className="months">
-                  {chartRows.map((row) => (
+                  {chartRows.filter((_, index) => chartRange !== "month" || index === 0 || index === chartRows.length - 1 || index % 5 === 0).map((row) => (
                     <span key={row.date}>
                       {new Date(`${row.date}T00:00:00`).toLocaleDateString(
                         "tr-TR",
@@ -693,6 +731,11 @@ function money(v: any) {
 }
 function zReportTotal(row: Row) {
   return Number(row.cashAmount ?? 0) + Number(row.cardAmount ?? 0);
+}
+function zReportDocumentSales(row: Row) {
+  const sales = Number(row.satisToplami ?? 0);
+  const payments = Number(row.nakit ?? 0) + Number(row.kredi ?? 0) + Number(row.diger ?? 0);
+  return payments > 0 && sales > payments * 2 ? payments : sales;
 }
 // API alan adlarını değiştirmeden ekranda Türkçe karşılıklarını gösterir.
 const alanAdlari: Record<string, string> = {
@@ -952,6 +995,16 @@ function LeaveRequestForm({
   setError: (error: string) => void;
   onSaved: () => Promise<void>;
 }) {
+  const [leaveStartDate, setLeaveStartDate] = useState("");
+  const [leaveDuration, setLeaveDuration] = useState("");
+  const leaveEndDate = (() => {
+    const duration = Number(leaveDuration);
+    if (!leaveStartDate || !Number.isInteger(duration) || duration < 1) return "";
+    const [year, month, day] = leaveStartDate.split("-").map(Number);
+    const end = new Date(year, month - 1, day);
+    end.setDate(end.getDate() + duration);
+    return `${end.getFullYear()}-${String(end.getMonth() + 1).padStart(2, "0")}-${String(end.getDate()).padStart(2, "0")}`;
+  })();
   if (status.annualEntitlementDays === 0)
     return (
       <section className="leave-request-section">
@@ -977,13 +1030,15 @@ function LeaveRequestForm({
           try {
             await api.post(`/employees/${employee.id}/leave`, {
               employeeId: employee.id,
-              leaveStartDate: data.leaveStartDate,
-              leaveEndDate: data.leaveEndDate,
+              leaveStartDate,
+              leaveEndDate,
               leaveType: "Yıllık İzin",
               description: data.description,
             });
             await onSaved();
             form.reset();
+            setLeaveStartDate("");
+            setLeaveDuration("");
           } catch (error: any) {
             setError(error.message || "İzin kaydedilemedi.");
           } finally {
@@ -993,12 +1048,13 @@ function LeaveRequestForm({
       >
         <label>
           İzin başlangıç tarihi
-          <input name="leaveStartDate" type="date" required />
+          <input name="leaveStartDate" type="date" required value={leaveStartDate} onChange={(event) => setLeaveStartDate(event.target.value)} />
         </label>
         <label>
-          İzin bitiş tarihi
-          <input name="leaveEndDate" type="date" required />
+          İzin süresi (gün)
+          <input name="leaveDuration" type="number" min="1" step="1" required value={leaveDuration} onChange={(event) => setLeaveDuration(event.target.value)} />
         </label>
+        {leaveEndDate && <p className="leave-end-preview">İzin bitiş tarihi: {formatDate(new Date(`${leaveEndDate}T00:00:00`))}</p>}
         <label className="full-width">
           Açıklama
           <input name="description" required />
@@ -1298,12 +1354,15 @@ function DataPage() {
                         ? ["İşlem", "Tür", "Referans", "Tarih", "Tutar"]
                         : [
                             "Rapor tarihi",
-                            "Brüt satış",
-                            "Net satış",
-                            "KDV",
-                            "Nakit",
-                            "Kart",
-                            "Toplam",
+                            "ÖKC fişleri",
+                            "Belge KDV toplamı",
+                            "Belge satış toplamı",
+                            "Belge nakit",
+                            "Belge kredi",
+                            "Belge diğer",
+                            "İptal adedi",
+                            "İptal KDV",
+                            "İptal satış",
                             "Durum",
                           ]
                 ).map((x) => (
@@ -1345,16 +1404,15 @@ function DataPage() {
                   ) : segment === "zreports" ? (
                     <>
                       <td>{formatDate(r.reportDate)}</td>
-                      <td>{money(r.grossSales)}</td>
-                      <td>
-                        {money(
-                          Number(r.grossSales ?? 0) - Number(r.totalVat ?? 0),
-                        )}
-                      </td>
-                      <td>{money(r.totalVat)}</td>
-                      <td>{money(r.cashAmount)}</td>
-                      <td>{money(r.cardAmount)}</td>
-                      <td>{money(zReportTotal(r))}</td>
+                      <td>{r.oksFisleriCount ?? 0}</td>
+                      <td>{money(r.kdvToplami)}</td>
+                      <td>{money(zReportDocumentSales(r))}</td>
+                      <td>{money(r.nakit)}</td>
+                      <td>{money(r.kredi)}</td>
+                      <td>{money(r.diger)}</td>
+                      <td>{r.iptalCount ?? 0}</td>
+                      <td>{money(r.iptalKdvToplami)}</td>
+                      <td>{money(r.iptalSatisToplami)}</td>
                       <td>
                         <span className="status">
                           {r.isConfirmed ? "Onaylandı" : "Bekliyor"}
@@ -1931,10 +1989,9 @@ function Upload() {
   }
   async function save(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
-    const d = Object.fromEntries(new FormData(e.currentTarget)) as Record<
-      string,
-      any
-    >;
+    const d = {
+      reportDate: result?.reportDate ?? new Date().toISOString(),
+    } as Record<string, any>;
     for (const k of [
       "grossSales",
       "totalVat",
@@ -1948,11 +2005,11 @@ function Upload() {
       "iptalKdvToplami",
       "iptalSatisToplami",
     ])
-      d[k] = Number(d[k] || result?.[k] || 0);
-    d.nakit = Number(d.documentNakit || result?.nakit || 0);
-    d.kredi = Number(d.documentKredi || result?.kredi || 0);
+      d[k] = Number(result?.[k] || 0);
+    d.nakit = Number(result?.nakit || 0);
+    d.kredi = Number(result?.kredi || 0);
     for (const k of ["oksFisleriCount", "iptalCount"])
-      d[k] = Number(d[k] || result?.[k] || 0);
+      d[k] = Number(result?.[k] || 0);
     d.documentPath = result?.documentPath;
     d.ocrRawText = result?.ocrRawText;
     d.isConfirmed = true;
@@ -2080,63 +2137,25 @@ function Upload() {
             <form className="ocr-review" onSubmit={save}>
               <h2>Okunan bilgileri inceleyin</h2>
               <p>
-                Raporu onaylamadan önce tutarları kontrol edip gerekirse
-                düzeltin.
+                Belge tipleri OCR ile okundu. Raporu onaylayarak kaydedebilirsiniz.
               </p>
-              <label>
-                Rapor tarihi
-                <input
-                  type="date"
-                  name="reportDate"
-                  required
-                  defaultValue={new Date().toISOString().slice(0, 10)}
-                />
-              </label>
-              <div className="form-grid">
-                {[
-                  ["grossSales", "Brüt satış"],
-                  ["totalVat", "Toplam KDV"],
-                  ["netSales", "Net satış"],
-                  ["cashAmount", "Nakit tutarı"],
-                  ["cardAmount", "Kart tutarı"],
-                  ["totalAmount", "Toplam tutar"],
-                ].map(([key, label]) => (
-                  <label key={key}>
-                    {label}
-                    <input
-                      name={key}
-                      type="number"
-                      min="0"
-                      step="0.01"
-                      required
-                      defaultValue={result[key] ?? ""}
-                    />
-                  </label>
-                ))}
-              </div>
               <h3>Belge tipleri</h3>
-              <div className="form-grid">
+              <div className="form-grid ocr-document-types">
                 {[
                   ["oksFisleriCount", "ÖKC fişleri adedi"],
                   ["kdvToplami", "Belge KDV toplamı"],
                   ["satisToplami", "Belge satış toplamı"],
-                  ["documentNakit", "Belge tipi nakit toplamı"],
-                  ["documentKredi", "Belge tipi kredi toplamı"],
+                  ["nakit", "Belge tipi nakit toplamı"],
+                  ["kredi", "Belge tipi kredi toplamı"],
                   ["diger", "Belge tipi diğer toplamı"],
                   ["iptalCount", "İptal adedi"],
                   ["iptalKdvToplami", "İptal KDV toplamı"],
                   ["iptalSatisToplami", "İptal satış toplamı"],
                 ].map(([key, label]) => (
-                  <label key={key}>
-                    {label}
-                    <input
-                      name={key}
-                      type="number"
-                      min="0"
-                      step={key.endsWith("Count") ? "1" : "0.01"}
-                      defaultValue={result[key] ?? ""}
-                    />
-                  </label>
+                  <div className="ocr-document-value" key={key}>
+                    <span>{label}</span>
+                    <strong>{result[key] ?? "—"}</strong>
+                  </div>
                 ))}
               </div>
               <details>

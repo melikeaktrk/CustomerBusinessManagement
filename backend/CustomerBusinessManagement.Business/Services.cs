@@ -26,7 +26,30 @@ public sealed class ZReportOcrService(IConfiguration configuration) : IZReportOc
     {
         var ocrSpaceKey = configuration["Ocr:OcrSpaceApiKey"];
         if (!string.IsNullOrWhiteSpace(ocrSpaceKey))
-            return ZReportOcrParser.Parse(await ReadWithOcrSpaceAsync(file, ocrSpaceKey.Trim(), ct));
+        {
+            var configuredEngine = configuration["Ocr:OcrSpaceEngine"] ?? "2";
+            var isPdf = Path.GetExtension(file.FileName).Equals(".pdf", StringComparison.OrdinalIgnoreCase);
+            if (isPdf) configuredEngine = "1";
+
+            var ocrSpacePassTexts = new List<string>
+            {
+                await ReadWithOcrSpaceAsync(file, ocrSpaceKey.Trim(), configuredEngine, ct)
+            };
+            var alternateEngine = configuredEngine == "1" ? "2" : "1";
+            try
+            {
+                ocrSpacePassTexts.Add(await ReadWithOcrSpaceAsync(file, ocrSpaceKey.Trim(), alternateEngine, ct));
+            }
+            catch (OcrProviderUnavailableException) when (!ct.IsCancellationRequested)
+            {
+                // Preserve the successful configured-engine pass if the alternate is unavailable.
+            }
+            catch (OcrDocumentProcessingException) when (!ct.IsCancellationRequested)
+            {
+                // An alternate engine can reject a format the configured engine accepted.
+            }
+            return ZReportOcrParser.ParseBest(ocrSpacePassTexts);
+        }
 
         // Boş değer bırakıldığında Windows PATH kullanılır; ortam değişkenleri JSON ayarlarını ezer.
         var tesseract = ResolveExecutable(configuration["Ocr:TesseractPath"], "tesseract.exe");
@@ -35,29 +58,36 @@ public sealed class ZReportOcrService(IConfiguration configuration) : IZReportOc
             : configuration["Ocr:Languages"]!;
         var tessdataPath = ResolveConfiguredPath(configuration["Ocr:TessdataPath"]);
         var fileExtension = Path.GetExtension(file.FileName);
-        string rawText;
-
         if (fileExtension.Equals(".pdf", StringComparison.OrdinalIgnoreCase))
         {
-            rawText = await ReadPdfAsync(file, tesseract, languages, tessdataPath, ct);
-        }
-        else
-        {
-            await using var input = file.OpenReadStream();
-            rawText = await RunProcessAsync(
-                tesseract,
-                BuildTesseractArguments(languages, tessdataPath),
-                input,
-                ct
-            );
+            var pageTexts = await ReadPdfAsync(file, tesseract, languages, tessdataPath, ct);
+            return ZReportOcrParser.ParseBest(pageTexts);
         }
 
-        return ZReportOcrParser.Parse(rawText);
+        // Thermal receipts are narrow and often photographed at an angle. Run several
+        // Tesseract page-segmentation modes so labels missed in one pass can be recovered.
+        var passTexts = new List<string>();
+        foreach (var pageSegmentationMode in new[] { "4", "6", "11" })
+        {
+            await using var input = file.OpenReadStream();
+            passTexts.Add(await RunProcessAsync(
+                tesseract,
+                BuildTesseractArguments(languages, tessdataPath, pageSegmentationMode),
+                input,
+                ct
+            ));
+        }
+        return ZReportOcrParser.ParseBest(passTexts);
     }
 
     private static readonly HttpClient OcrSpaceClient = new() { Timeout = TimeSpan.FromSeconds(60) };
 
-    private async Task<string> ReadWithOcrSpaceAsync(IFormFile file, string apiKey, CancellationToken ct)
+    private async Task<string> ReadWithOcrSpaceAsync(
+        IFormFile file,
+        string apiKey,
+        string engine,
+        CancellationToken ct
+    )
     {
         var isPdf = Path.GetExtension(file.FileName).Equals(".pdf", StringComparison.OrdinalIgnoreCase);
         using var form = new MultipartFormDataContent();
@@ -65,7 +95,7 @@ public sealed class ZReportOcrService(IConfiguration configuration) : IZReportOc
         form.Add(new StringContent("tur"), "language");
         form.Add(new StringContent("true"), "isTable");
         form.Add(new StringContent("true"), "scale");
-        form.Add(new StringContent(isPdf ? "1" : (configuration["Ocr:OcrSpaceEngine"] ?? "2")), "OCREngine");
+        form.Add(new StringContent(engine), "OCREngine");
 
         await using var stream = file.OpenReadStream();
         using var fileContent = new StreamContent(stream);
@@ -115,7 +145,7 @@ public sealed class ZReportOcrService(IConfiguration configuration) : IZReportOc
         }
     }
 
-    private async Task<string> ReadPdfAsync(
+    private async Task<List<string>> ReadPdfAsync(
         IFormFile file,
         string tesseract,
         string languages,
@@ -141,22 +171,25 @@ public sealed class ZReportOcrService(IConfiguration configuration) : IZReportOc
             );
             var pages = Directory.GetFiles(temporaryDirectory, "page-*.png")
                 .OrderBy(x => x, StringComparer.Ordinal);
-            var text = new StringBuilder();
+            var texts = new List<string>();
             foreach (var page in pages)
             {
-                await using var image = File.OpenRead(page);
-                text.AppendLine(await RunProcessAsync(
-                    tesseract,
-                    BuildTesseractArguments(languages, tessdataPath),
-                    image,
-                    ct
-                ));
+                foreach (var pageSegmentationMode in new[] { "4", "6", "11" })
+                {
+                    await using var image = File.OpenRead(page);
+                    texts.Add(await RunProcessAsync(
+                        tesseract,
+                        BuildTesseractArguments(languages, tessdataPath, pageSegmentationMode),
+                        image,
+                        ct
+                    ));
+                }
             }
-            if (text.Length == 0)
+            if (texts.Count == 0)
                 throw new OcrDocumentProcessingException(
                     "PDF dosyasından okunabilir sayfa görüntüsü üretilemedi. Belgenin bozuk olmadığını kontrol edin."
                 );
-            return text.ToString();
+            return texts;
         }
         finally
         {
@@ -240,7 +273,11 @@ public sealed class ZReportOcrService(IConfiguration configuration) : IZReportOc
             : Path.GetFullPath(path, AppContext.BaseDirectory);
     }
 
-    private static List<string> BuildTesseractArguments(string languages, string? tessdataPath)
+    private static List<string> BuildTesseractArguments(
+        string languages,
+        string? tessdataPath,
+        string pageSegmentationMode = "4"
+    )
     {
         var arguments = new List<string> { "stdin", "stdout" };
         if (!string.IsNullOrWhiteSpace(tessdataPath))
@@ -248,7 +285,7 @@ public sealed class ZReportOcrService(IConfiguration configuration) : IZReportOc
             arguments.Add("--tessdata-dir");
             arguments.Add(tessdataPath.Trim());
         }
-        arguments.AddRange(["-l", languages, "--psm", "4"]);
+        arguments.AddRange(["-l", languages, "--psm", pageSegmentationMode]);
         return arguments;
     }
 
@@ -257,6 +294,52 @@ public sealed class ZReportOcrService(IConfiguration configuration) : IZReportOc
 /// <summary>Gerçek OCR metnindeki etiketli tutarları Türkçe para yazımlarını gözeterek ayıklar.</summary>
 public static class ZReportOcrParser
 {
+    public static OcrResult ParseBest(IEnumerable<string> rawTexts)
+    {
+        var texts = rawTexts.Where(text => !string.IsNullOrWhiteSpace(text)).ToList();
+        if (texts.Count == 0) return Parse(string.Empty);
+
+        var parsed = texts.Select(Parse).ToList();
+        T? Pick<T>(Func<OcrResult, T?> selector) where T : struct => parsed
+            .Select((result, index) => new { Value = selector(result), Score = CompletenessScore(result), Index = index })
+            .Where(candidate => candidate.Value.HasValue)
+            .GroupBy(candidate => candidate.Value!.Value)
+            .OrderByDescending(group => group.Count())
+            .ThenByDescending(group => group.Max(candidate => candidate.Score))
+            .ThenBy(group => group.Min(candidate => candidate.Index))
+            .Select(group => (T?)group.Key)
+            .FirstOrDefault();
+
+        return new OcrResult(
+            string.Join("\r\n--- OCR PASS ---\r\n", texts),
+            Pick(result => result.GrossSales),
+            Pick(result => result.TotalVat),
+            Pick(result => result.NetSales),
+            Pick(result => result.CashAmount),
+            Pick(result => result.CardAmount),
+            Pick(result => result.TotalAmount),
+            null,
+            Pick(result => result.OksFisleriCount),
+            Pick(result => result.KdvToplami),
+            Pick(result => result.SatisToplami),
+            Pick(result => result.Diger),
+            Pick(result => result.IptalCount),
+            Pick(result => result.IptalKdvToplami),
+            Pick(result => result.IptalSatisToplami),
+            Pick(result => result.Nakit),
+            Pick(result => result.Kredi)
+        );
+    }
+
+    private static int CompletenessScore(OcrResult result) =>
+        new object?[]
+        {
+            result.GrossSales, result.TotalVat, result.NetSales, result.CashAmount,
+            result.CardAmount, result.TotalAmount, result.OksFisleriCount,
+            result.KdvToplami, result.SatisToplami, result.Nakit, result.Kredi,
+            result.Diger, result.IptalCount, result.IptalKdvToplami, result.IptalSatisToplami
+        }.Count(value => value is not null);
+
     public static OcrResult Parse(string rawText)
     {
         // Satır sonları etiket ile tutar arasında gelebilir; ham OCR metni yanıtta korunur.
@@ -286,21 +369,98 @@ public static class ZReportOcrParser
         var qrCard = ParsePaymentTotal(payments, "karekod kart");
         var card = credit.HasValue && qrCard.HasValue ? credit + qrCard : credit ?? qrCard;
         var total = cash.HasValue && card.HasValue ? cash + card : null;
-        var documentTypes = ExtractSection(normalizedText, "belge t", "sayaclar");
+        var documentTypes = ExtractSection(normalizedText, "belge tipleri", "sayaclar");
+        if (string.IsNullOrWhiteSpace(documentTypes))
+            documentTypes = ExtractSection(normalizedText, "belge t", "sayaclar");
+        // OCR may omit the section title, split the heading, or return only the receipt lines.
+        // Locate the receipt-count label and use it as the section start in those cases.
+        if (string.IsNullOrWhiteSpace(documentTypes))
+        {
+            var receiptAnchor = Regex.Match(
+                normalizedText,
+                @"(?:o.?k.?c[\s\S]{0,12})?fisler[i1l]?",
+                RegexOptions.CultureInvariant
+            );
+            if (receiptAnchor.Success)
+            {
+                var candidate = normalizedText[receiptAnchor.Index..];
+                if (candidate.Contains("satis top", StringComparison.Ordinal))
+                {
+                    var countersStart = candidate.IndexOf("sayac", StringComparison.Ordinal);
+                    documentTypes = countersStart < 0 ? candidate : candidate[..countersStart];
+                }
+            }
+        }
+        // Last resort for OCR output that lost the receipt-count label but retained the totals.
+        if (string.IsNullOrWhiteSpace(documentTypes)
+            && normalizedText.Contains("satis top", StringComparison.Ordinal)
+            && normalizedText.Contains("iptal", StringComparison.Ordinal))
+            documentTypes = normalizedText;
         var voidSection = ExtractSection(documentTypes, "iptal", null);
+        if (string.IsNullOrWhiteSpace(voidSection))
+            voidSection = ExtractSection(documentTypes, "ipta", null);
         var receiptCount = ParseIntegerOnLine(documentTypes, "okc fisleri");
-        var documentVat = ParseAmountOnLine(documentTypes, "kdv toplami", "kov toplami");
-        var documentSales = ParseAmountOnLine(documentTypes, "satis top");
+        var documentVat = ParseAmountOnLine(documentTypes, "kdv toplami", "kdv. toplami", "kov toplami", "kov. toplami");
+        // Z reports commonly repeat the regular document VAT in KDV BİLGİLERİ.
+        // On that row, OCR can see the rate (10.00) before the actual VAT amount;
+        // take the rightmost amount on the tax row as a stronger cross-check.
+        var vatDetails = ExtractSection(normalizedText, "kdv bilgileri", "departman bilgileri");
+        var vatFromDetails = ParseRightmostAmountOnLine(vatDetails, "kdv", "kov", "kon");
+        var dailySummary = ExtractSection(normalizedText, "gunluk fis dokumu", "departman bilgileri");
+        var vatFromDailySummary = ParseAmountOnLine(dailySummary, "topkdv", "top kdv", "topkov", "top kov");
+        if (vatFromDailySummary.HasValue)
+            documentVat = vatFromDailySummary;
+        if (vatFromDetails.HasValue)
+            documentVat = vatFromDetails;
+        var documentSales = ParseAmountOnLine(documentTypes, "satis toplami", "satis toplani", "satis topl");
         var documentCash = ParseAmountOnLine(documentTypes, "nakit");
         var documentCard = ParseAmountOnLine(documentTypes, "kredi");
         var other = ParseAmountOnLine(documentTypes, "diger");
-        var cancelledCount = ParseIntegerOnLine(voidSection, "iptal");
-        var cancelledVat = ParseAmountOnLine(voidSection, "kdv toplami", "kov toplami");
-        var cancelledSales = ParseAmountOnLine(voidSection, "satis top");
+        // OCR providers sometimes split or truncate the detected section. Recover any
+        // missing document values from their labels in the complete OCR text.
+        receiptCount ??= ParseIntegerOnLine(normalizedText, "okc fisleri");
+        documentVat ??= ParseAmountOnLine(normalizedText, "kdv toplami", "kdv. toplami", "kov toplami", "kov. toplami");
+        documentSales ??= ParseAmountOnLine(normalizedText, "satis toplami", "satis toplani", "satis topl");
+        documentCash ??= ParseAmountOnLine(normalizedText, "nakit");
+        documentCard ??= ParseAmountOnLine(normalizedText, "kredi");
+        other ??= ParseAmountOnLine(normalizedText, "diger");
+        if (!other.HasValue && documentSales.HasValue && documentCash.HasValue && documentCard.HasValue)
+        {
+            var inferredOther = documentSales.Value - documentCash.Value - documentCard.Value;
+            if (inferredOther >= 0) other = inferredOther;
+        }
+        if (string.IsNullOrWhiteSpace(voidSection))
+        {
+            voidSection = ExtractSection(normalizedText, "iptal", null);
+            if (string.IsNullOrWhiteSpace(voidSection))
+                voidSection = ExtractSection(normalizedText, "ipta", null);
+        }
+        // OCR frequently drops the final L in İPTAL (for example, "İPTA 10").
+        var cancelledCount = ParseIntegerOnLine(voidSection, "iptal", "ipta");
+        var cancelledVat = ParseAmountOnLine(voidSection, "kdv toplami", "kdv. toplami", "kov toplami", "kov. toplami");
+        var cancelledSales = ParseAmountOnLine(voidSection, "satis toplami", "satis toplani", "satis topl");
+        cancelledCount ??= ParseIntegerOnLine(normalizedText, "satis iptal", "iptal satis");
+        cancelledVat ??= ParseAmountOnLineOccurrence(documentTypes, 1, "kdv toplami", "kdv. toplami", "kov toplami", "kov. toplami");
+        cancelledSales ??= ParseAmountOnLineOccurrence(documentTypes, 1, "satis toplami", "satis toplani", "satis topl");
+
+        // Sales in BELGE TİPLERİ must reconcile with its cash, credit, and other totals.
+        // OCR can attach a stray leading digit to the sales figure (21.890 -> 421.890).
+        if (documentCash.HasValue && documentCard.HasValue && other.HasValue)
+        {
+            var paymentBreakdownTotal = documentCash.Value + documentCard.Value + other.Value;
+            if (paymentBreakdownTotal > 0 && documentSales != paymentBreakdownTotal)
+                documentSales = paymentBreakdownTotal;
+        }
+
+        // The daily receipt summary is a clearer duplicate of document sales on some slips.
+        // OCR may prefix a spurious digit to the BELGE TİPLERİ amount (21.890 -> 421.890).
+        var dailySales = ParseAmount(ExtractSection(normalizedText, "gunluk fis dokumu", "kdv bilgileri"), "toplam");
+        if (dailySales.HasValue && documentSales > dailySales * 2)
+            documentSales = dailySales;
         gross ??= documentSales;
         vat ??= documentVat;
-        cash ??= ParseAmount(normalizedText, "Nakit", "Cash", "CashAmount");
-        card ??= ParseAmount(normalizedText, "Kart", "Kredi kartı", "Card", "CardAmount");
+        cash = documentCash ?? cash ?? ParseAmount(normalizedText, "Nakit", "Cash", "CashAmount");
+        card = documentCard ?? card ?? ParseAmount(normalizedText, "Kart", "Kredi kartı", "Kredi", "Card", "CardAmount");
         net ??= gross.HasValue && vat.HasValue ? gross - vat : null;
         total ??= documentSales ?? (cash.HasValue && card.HasValue ? cash + card : null);
         return new OcrResult(
@@ -351,23 +511,82 @@ public static class ZReportOcrParser
     }
 
     private static decimal? ParseAmountOnLine(string text, params string[] labels)
+        => ParseAmountOnLineOccurrence(text, 0, labels);
+
+    private static decimal? ParseRightmostAmountOnLine(string text, params string[] labels)
     {
         foreach (var line in text.Split(["\r\n", "\n"], StringSplitOptions.RemoveEmptyEntries))
         {
             var normalizedLine = NormalizeForMatching(line);
+            var label = labels
+                .Where(candidate => normalizedLine.Contains(candidate, StringComparison.Ordinal))
+                .OrderByDescending(candidate => candidate.Length)
+                .FirstOrDefault();
+            if (label is null) continue;
+
+            var labelIndex = normalizedLine.IndexOf(label, StringComparison.Ordinal) + label.Length;
+            var amounts = Regex.Matches(normalizedLine[labelIndex..], @"[0-9b][0-9b., ]*")
+                .Select(match => ParseReceiptAmount(match.Value))
+                .Where(amount => amount.HasValue)
+                .Select(amount => amount!.Value)
+                .ToList();
+            if (amounts.Count > 0) return amounts[^1];
+        }
+        return null;
+    }
+
+    private static decimal? ParseReceiptAmount(string rawValue)
+    {
+        var value = rawValue.Trim().Replace('b', '8').Replace(" ", "");
+        var decimalSeparator = value.LastIndexOfAny([',', '.']);
+        var normalized = decimalSeparator >= 0 && value.Length - decimalSeparator - 1 is 1 or 2
+            ? Regex.Replace(value[..decimalSeparator], "[.,]", "") + "." + value[(decimalSeparator + 1)..]
+            : Regex.Replace(value, "[.,]", "");
+        return decimal.TryParse(normalized, NumberStyles.Number, CultureInfo.InvariantCulture, out var amount)
+            ? amount
+            : null;
+    }
+
+    private static decimal? ParseAmountOnLineOccurrence(string text, int occurrence, params string[] labels)
+    {
+        var parsedCount = 0;
+        var lines = text.Split(["\r\n", "\n"], StringSplitOptions.RemoveEmptyEntries);
+        for (var lineIndex = 0; lineIndex < lines.Length; lineIndex++)
+        {
+            var normalizedLine = NormalizeForMatching(lines[lineIndex]);
+            var matches = new List<(int Index, int Length)>();
             foreach (var label in labels)
             {
                 var index = normalizedLine.IndexOf(label, StringComparison.Ordinal);
-                if (index < 0) continue;
-                var valueMatch = Regex.Match(normalizedLine[(index + label.Length)..], @"\*?[^0-9b\r\n]*([0-9b][0-9., ]*)");
-                if (!valueMatch.Success) continue;
-                var value = valueMatch.Groups[1].Value.Trim().Replace('b', '8').Replace(" ", "");
-                var decimalSeparator = value.LastIndexOfAny([',', '.']);
-                var normalized = decimalSeparator >= 0 && value.Length - decimalSeparator - 1 is 1 or 2
-                    ? Regex.Replace(value[..decimalSeparator], "[.,]", "") + "." + value[(decimalSeparator + 1)..]
-                    : Regex.Replace(value, "[.,]", "");
-                if (decimal.TryParse(normalized, NumberStyles.Number, CultureInfo.InvariantCulture, out var amount))
-                    return amount;
+                while (index >= 0)
+                {
+                    matches.Add((index, label.Length));
+                    index = normalizedLine.IndexOf(label, index + label.Length, StringComparison.Ordinal);
+                }
+            }
+
+            foreach (var match in matches
+                .GroupBy(x => x.Index)
+                .Select(group => group.OrderByDescending(x => x.Length).First())
+                .OrderBy(x => x.Index))
+            {
+                var candidateLines = new[] { normalizedLine[(match.Index + match.Length)..] }
+                    .Concat(lineIndex + 1 < lines.Length ? [NormalizeForMatching(lines[lineIndex + 1])] : []);
+                foreach (var candidate in candidateLines)
+                {
+                    var valueMatch = Regex.Match(candidate, @"\*?[^0-9b\r\n]*([0-9b][0-9., ]*)");
+                    if (!valueMatch.Success) continue;
+                    var value = valueMatch.Groups[1].Value.Trim().Replace('b', '8').Replace(" ", "");
+                    var decimalSeparator = value.LastIndexOfAny([',', '.']);
+                    var normalized = decimalSeparator >= 0 && value.Length - decimalSeparator - 1 is 1 or 2
+                        ? Regex.Replace(value[..decimalSeparator], "[.,]", "") + "." + value[(decimalSeparator + 1)..]
+                        : Regex.Replace(value, "[.,]", "");
+                    if (decimal.TryParse(normalized, NumberStyles.Number, CultureInfo.InvariantCulture, out var amount))
+                    {
+                        if (parsedCount++ == occurrence) return amount;
+                        break;
+                    }
+                }
             }
         }
         return null;
