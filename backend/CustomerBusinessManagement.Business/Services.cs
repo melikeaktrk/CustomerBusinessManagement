@@ -359,8 +359,7 @@ public static class ZReportOcrParser
             "KDV Tutari",
             "Toplam KDV",
             "Total VAT",
-            "TotalVat",
-            "KDV"
+            "TotalVat"
         );
         var net = ParseAmount(normalizedText, "Net satış", "Net satis", "Net Sales", "NetSales");
         var payments = ExtractSection(normalizedText, "odeme bilgileri", "belge t");
@@ -457,17 +456,75 @@ public static class ZReportOcrParser
         var dailySales = ParseAmount(ExtractSection(normalizedText, "gunluk fis dokumu", "kdv bilgileri"), "toplam");
         if (dailySales.HasValue && documentSales > dailySales * 2)
             documentSales = dailySales;
+        // BELGE TİPLERİ KDV'si OCR'da bozulabiliyor (ör. "5:" -> 5,00). Rapordaki tüm KDV
+        // satırlarından makul adayları toplayıp satış tutarıyla doğrula.
+        documentVat = ResolveDocumentVat(normalizedText, documentVat, documentSales);
         gross ??= documentSales;
+        // Genel "KDV" etiketi, "KDV %10.00" satırındaki oranı (410.00) tutar sanabilir; belge KDV'si önceliklidir.
         vat ??= documentVat;
+        vat ??= ParseAmount(normalizedText, "KDV");
         cash = documentCash ?? cash ?? ParseAmount(normalizedText, "Nakit", "Cash", "CashAmount");
         card = documentCard ?? card ?? ParseAmount(normalizedText, "Kart", "Kredi kartı", "Kredi", "Card", "CardAmount");
         net ??= gross.HasValue && vat.HasValue ? gross - vat : null;
-        total ??= documentSales ?? (cash.HasValue && card.HasValue ? cash + card : null);
+        total = documentSales ?? total ?? (cash.HasValue && card.HasValue ? cash + card : null);
         return new OcrResult(
             rawText.Trim(), gross, vat, net, cash, card, total,
             null, receiptCount, documentVat, documentSales, other,
             cancelledCount, cancelledVat, cancelledSales, documentCash, documentCard
         );
+    }
+
+
+    private static readonly decimal[] CommonVatRates = [1m, 8m, 10m, 18m, 20m];
+
+    /// <summary>
+    /// Z raporunda belge KDV toplamı birden fazla yerde (TOPKDV, KDV BİLGİLERİ, BELGE TİPLERİ) tekrarlanır.
+    /// Tüm KDV satırlarındaki kesin para formatlı tutarları toplar, satış tutarına göre makul olmayanları
+    /// (oran, "5:" gibi artıklar, toplam satış vb.) eler ve en çok tekrar eden/oranla uyumlu olanı seçer.
+    /// </summary>
+    private static decimal? ResolveDocumentVat(string normalizedText, decimal? current, decimal? sales)
+    {
+        if (!sales.HasValue || sales.Value <= 0) return current;
+        var salesValue = sales.Value;
+        bool Plausible(decimal value) => value >= salesValue * 0.0099m && value <= salesValue * 0.1667m;
+        decimal RateDistance(decimal value) => CommonVatRates
+            .Select(rate => Math.Abs(value - salesValue * rate / (100m + rate)))
+            .Min();
+
+        var amountPattern = new Regex(@"\d{1,3}(?:[.,\s]?\d{3})*[.,]\s?\d{2}(?!\d)", RegexOptions.CultureInvariant);
+        var lines = normalizedText.Split(["\r\n", "\n"], StringSplitOptions.RemoveEmptyEntries);
+        var counts = new Dictionary<decimal, int>();
+
+        void Collect(string line)
+        {
+            foreach (Match match in amountPattern.Matches(line))
+            {
+                var amount = ParseReceiptAmount(match.Value);
+                if (amount.HasValue && Plausible(amount.Value))
+                    counts[amount.Value] = counts.GetValueOrDefault(amount.Value) + 1;
+            }
+        }
+
+        for (var index = 0; index < lines.Length; index++)
+        {
+            var line = lines[index];
+            if (!Regex.IsMatch(line, @"k[dov][vn]", RegexOptions.CultureInvariant)) continue;
+            var before = counts.Values.Sum();
+            Collect(line);
+            // Tutar bir sonraki satıra kaymış olabilir; başlık satırlarına bakma.
+            if (counts.Values.Sum() == before && !line.Contains("bilgi", StringComparison.Ordinal) && index + 1 < lines.Length)
+                Collect(lines[index + 1]);
+        }
+
+        if (counts.Count == 0) return current.HasValue && Plausible(current.Value) ? current : null;
+
+        var best = counts
+            .OrderByDescending(pair => pair.Value)
+            .ThenBy(pair => RateDistance(pair.Key))
+            .First();
+        if (current.HasValue && Plausible(current.Value) && counts.GetValueOrDefault(current.Value) >= best.Value)
+            return current;
+        return best.Key;
     }
 
     private static string ExtractSection(string text, string startLabel, string? endLabel)
