@@ -84,7 +84,16 @@ requires Poppler's `pdftoppm.exe`; PNG/JPG OCR only requires Tesseract and the
 language files. After uploading or replacing these files, restart the site and
 verify the API process can execute `tesseract.exe`.
 
-The OCR parser returns null for unrecognized amounts, tolerates Turkish/English labels and common Turkish/decimal currency separators, and derives net/total only when their source amounts are both recognized. The admin must review and confirm every Z report. Files are signature-checked and stored under `App_Data/ZReports` inside the API content root, then served only through the authenticated report-document endpoint.
+When an OCR.space key is configured, the API requests word bounding boxes, finds the
+`BELGE TİPLERİ` to `SAYAÇLAR` region, and performs a second OCR pass on a
+2x grayscale/contrast-enhanced crop. That pass is preferred only when its document
+type totals reconcile (`NAKİT + KREDİ + DİĞER = SATIŞ TOPLAMI`); otherwise the
+normal multi-pass OCR result is retained. The OCR parser returns null for unrecognized
+amounts, tolerates Turkish/English labels and common Turkish/decimal currency
+separators, and derives net/total only when their source amounts are both recognized.
+The admin must review and confirm every Z report. Files are signature-checked and stored
+under `App_Data/ZReports` inside the API content root, then served only through the
+authenticated report-document endpoint.
 
 ## Validate
 

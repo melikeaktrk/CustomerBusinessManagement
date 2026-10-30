@@ -3,6 +3,7 @@ using CustomerBusinessManagement.Business;
 using CustomerBusinessManagement.DataAccess;
 using CustomerBusinessManagement.DTO;
 using CustomerBusinessManagement.Entities;
+using System.Globalization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
@@ -255,6 +256,155 @@ public class ApiModuleTests
         Assert.Equal(10, result.IptalCount);
         Assert.Equal(194.07m, result.IptalKdvToplami);
         Assert.Equal(2135.00m, result.IptalSatisToplami);
+    }
+
+    [Theory]
+    [InlineData(98, 1509.42, 16603, 5530, 11073, 0, 3, 70.91, 780)]
+    [InlineData(88, 1989.98, 21890, 4425, 17465, 0, 10, 194.07, 2135)]
+    [InlineData(99, 1067.82, 11745, 2355, 9390, 0, 3, 8.64, 95)]
+    [InlineData(70, 944.16, 10385, 1490, 8895, 0, 2, 60.46, 665)]
+    public void OcrParserReadsDocumentTypesForReferenceReceipts(
+        int receiptCount,
+        decimal vat,
+        decimal sales,
+        decimal cash,
+        decimal credit,
+        decimal other,
+        int cancelledCount,
+        decimal cancelledVat,
+        decimal cancelledSales)
+    {
+        var result = ZReportOcrParser.Parse($"""
+            GÜNLÜK FİŞ DÖKÜMÜ
+            BELGE TİPLERİ
+            ÖKC FİŞLERİ {receiptCount}
+            -KDV TOPLAMI *{vat.ToString("0.00", CultureInfo.InvariantCulture)}
+            -SATIŞ TOPLAMI *{sales.ToString("0.00", CultureInfo.InvariantCulture)}
+            -NAKİT *{cash.ToString("0.00", CultureInfo.InvariantCulture)}
+            -KREDİ *{credit.ToString("0.00", CultureInfo.InvariantCulture)}
+            -DİĞER *{other.ToString("0.00", CultureInfo.InvariantCulture)}
+            İPTAL {cancelledCount}
+            -KDV TOPLAMI *{cancelledVat.ToString("0.00", CultureInfo.InvariantCulture)}
+            -SATIŞ TOPLAMI *{cancelledSales.ToString("0.00", CultureInfo.InvariantCulture)}
+            SAYAÇLAR
+            """);
+
+        Assert.Equal(receiptCount, result.OksFisleriCount);
+        Assert.Equal(vat, result.KdvToplami);
+        Assert.Equal(sales, result.SatisToplami);
+        Assert.Equal(cash, result.Nakit);
+        Assert.Equal(credit, result.Kredi);
+        Assert.Equal(other, result.Diger);
+        Assert.Equal(cancelledCount, result.IptalCount);
+        Assert.Equal(cancelledVat, result.IptalKdvToplami);
+        Assert.Equal(cancelledSales, result.IptalSatisToplami);
+    }
+
+    [Fact]
+    public void OcrParserUsesPaymentAndCounterCrossChecksForNoisyFullReceipt()
+    {
+        var result = ZReportOcrParser.ParseBest(
+        [
+            """
+            GÜNLÜK FİŞ DÖKÜMÜ
+            TOPLAM *10.385,00
+            ÖDEME BİLGİLERİ
+            NAKİT 21
+            TOPLAM *1.490,00
+            KREDİ 39
+            TOPLAM *6.835,00
+            KAREKOD KART 10
+            TOPLAM *2.060,00
+            BELGE TİPLERİ
+            ÖKC FİŞLERİ 70
+            -KDV TOPLAMI *944,16
+            -SATIŞ TOPLAMI *10.385,00
+            -NAKİT *1.490,00
+            -KREDİ *8.895,00
+            -DİĞER *0,00
+            İPTAL 2
+            -KDV TOPLAMI *60,46
+            -SATIŞ TOPLAMI *665,00
+            SAYAÇLAR
+            MÜŞTERİ FİŞİ ADETİ 70
+            SATIŞ İPTAL 2
+            SATIŞ İPTAL TUTAR *665,00
+            """
+        ]);
+
+        Assert.Equal(70, result.OksFisleriCount);
+        Assert.Equal(8895m, result.Kredi);
+        Assert.Equal(0m, result.Diger);
+        Assert.Equal(665m, result.IptalSatisToplami);
+    }
+
+    [Fact]
+    public void OcrParserPrefersFullPassCountersOverCropWithoutCounters()
+    {
+        var result = ZReportOcrParser.ParseBest(
+        [
+            """
+            BELGE TİPLERİ
+            ÖKC FİŞLERİ 10
+            -SATIŞ TOPLAMI *10.385,00
+            -NAKİT *1.490,00
+            -KREDİ *8.895,00
+            -DİĞER *0,00
+            İPTAL 2
+            -SATIŞ TOPLAMI *665,00
+            SAYAÇLAR
+            """,
+            """
+            GÜNLÜK FİŞ DÖKÜMÜ
+            TOPLAM *10.385,00
+            ÖDEME BİLGİLERİ
+            NAKİT
+            TOPLAM *1.490,00
+            KREDİ
+            TOPLAM *8.895,00
+            BELGE TİPLERİ
+            ÖKC FİŞLERİ 70
+            -KDV TOPLAMI *944,16
+            -SATIŞ TOPLAMI *10.385,00
+            -NAKİT *1.490,00
+            -KREDİ *8.895,00
+            -DİĞER *0,00
+            İPTAL 2
+            -KDV TOPLAMI *60,46
+            -SATIŞ TOPLAMI *665,00
+            SAYAÇLAR
+            MÜŞTERİ FİŞİ ADETİ 70
+            SATIŞ İPTAL TUTAR *665,00
+            """
+        ]);
+
+        Assert.Equal(70, result.OksFisleriCount);
+        Assert.Equal(665m, result.IptalSatisToplami);
+    }
+
+    [Fact]
+    public void OcrParserDerivesReceiptCountFromPaymentCountsWhenLabelIsUnreadable()
+    {
+        var result = ZReportOcrParser.Parse(
+            """
+            ÖDEME BİLGİLERİ
+            NAKİT 21
+            TOPLAM *1.490,00
+            KREDİ 39
+            TOPLAM *6.835,00
+            KAREKOD KART 10
+            TOPLAM *2.060,00
+            BELGE TİPLERİ
+            ÖKC FİŞLERİ
+            -SATIŞ TOPLAMI *10.385,00
+            -NAKİT *1.490,00
+            -KREDİ *8.895,00
+            -DİĞER *0,00
+            SAYAÇLAR
+            """
+        );
+
+        Assert.Equal(70, result.OksFisleriCount);
     }
 
     [Fact]
